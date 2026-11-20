@@ -1,0 +1,82 @@
+import express from 'express';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { z } from 'zod';
+import type { AiErrorCode } from '../shared/schema.ts';
+import { AiError, type AiProvider } from './ai/provider.ts';
+import type { Db } from './db.ts';
+import { HttpError } from './errors.ts';
+import { calendarRouter } from './routes/calendar.ts';
+import { reviewRouter } from './routes/review.ts';
+import { sessionsRouter } from './routes/sessions.ts';
+import { settingsRouter } from './routes/settings.ts';
+import { usersRouter } from './routes/users.ts';
+
+export interface AppOptions {
+  db: Db;
+  ai: AiProvider;
+  /** 建置後的前端檔案位置。有提供時,伺服器同時提供網頁本身。 */
+  staticDir?: string;
+  /** 是否在上課時於背景預先備好下一堂課。沒指定時不做(測試時比較單純);正式執行時由 index.ts 開啟。 */
+  prepareAhead?: boolean;
+}
+
+const AI_ERROR_STATUS: Record<AiErrorCode, number> = {
+  no_key: 400,
+  invalid_key: 400,
+  quota: 429,
+  bad_output: 502,
+  unavailable: 502,
+};
+
+export function createApp({ db, ai, staticDir, prepareAhead = false }: AppOptions): express.Express {
+  const app = express();
+  app.use(express.json({ limit: '1mb' }));
+
+  app.use('/api/users', usersRouter(db, ai));
+  app.use('/api/settings', settingsRouter(db, ai));
+  app.use('/api/sessions', sessionsRouter(db, ai, { prepareAhead }));
+  app.use('/api/review', reviewRouter(db));
+  app.use('/api', calendarRouter(db));
+
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ error: { code: 'not_found', message: '找不到這個 API' } });
+  });
+
+  if (staticDir) {
+    const indexHtml = join(staticDir, 'index.html');
+    if (!existsSync(indexHtml)) {
+      throw new Error(`找不到前端檔案 ${indexHtml},請先執行 npm run build`);
+    }
+    app.use(express.static(staticDir));
+    // 單頁應用:其餘網址一律回傳 index.html,由前端路由處理。
+    app.use((req, res, next) => {
+      if (req.method !== 'GET') return next();
+      res.sendFile(indexHtml);
+    });
+  }
+
+  app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    if (err instanceof z.ZodError) {
+      const message = err.issues.map((issue) => issue.message).join(';');
+      res.status(400).json({ error: { code: 'validation', message } });
+      return;
+    }
+    if (err instanceof HttpError) {
+      res.status(err.status).json({ error: { code: 'http', message: err.message } });
+      return;
+    }
+    if (err instanceof AiError) {
+      res.status(AI_ERROR_STATUS[err.code]).json({ error: { code: err.code, message: err.message, detail: err.detail } });
+      return;
+    }
+    if (err instanceof SyntaxError && 'body' in err) {
+      res.status(400).json({ error: { code: 'validation', message: '請求內容不是合法的 JSON' } });
+      return;
+    }
+    console.error(err);
+    res.status(500).json({ error: { code: 'internal', message: '伺服器發生未預期的錯誤,請查看終端機的訊息。' } });
+  });
+
+  return app;
+}
