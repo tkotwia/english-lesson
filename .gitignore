@@ -4,3 +4,5 @@ data/
 .env
 *.log
 .DS_Store
+# 用 scripts/make-app.sh 產生的 App:裡面記著這台電腦上的路徑,每台電腦各自產生。
+*.app

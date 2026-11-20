@@ -33,6 +33,44 @@
 
 右上角隨時可以切換使用者。切換不需要密碼,所以這台電腦上的任何人都能進入任何使用者。
 
+## 做成 App(不用開終端機)
+
+在終端機進到專案資料夾,執行一次:
+
+```bash
+./scripts/make-app.sh
+```
+
+資料夾裡會多一個「英文課.app」。之後點它就會啟動程式並開啟 Chrome,不會出現終端機視窗。
+
+- **停止**:結束這個 App(Cmd+Q,或在 Dock 的圖示上按右鍵選「結束」)。App 開著就是程式在執行,App 關掉程式就停止。
+- **已經開著時再點一次**:只會把網頁再開出來,不會重複啟動。
+- **第一次啟動**要安裝套件,約一兩分鐘,期間會跳出一個說明視窗。
+- **啟動紀錄**在 `~/Library/Logs/english-lesson.log`。原本顯示在終端機的訊息(例如每次呼叫 AI 花了幾秒)都寫在這裡;啟動失敗時 App 也會顯示最後幾行。
+- App 裡記著專案資料夾的位置。**搬動專案資料夾之後要重新執行一次** `./scripts/make-app.sh`。
+- 專案資料夾如果放在「文件」「桌面」或「下載項目」裡,macOS 第一次會詢問是否允許這個 App 取用該資料夾,請按允許。
+- App 用的是系統預設的圖示。`start.command` 仍然可以照常使用。
+
+## 讓這台 Mac 的所有帳號都能用
+
+用管理員帳號做一次:
+
+1. 用 [nodejs.org](https://nodejs.org) 的 macOS 安裝檔(.pkg)安裝 Node.js,這樣每個帳號都找得到。用 nvm 這類工具裝的只有安裝的帳號能用。
+2. 把專案放到共用資料夾,並開放所有帳號讀寫(之後新產生的檔案也自動適用):
+   ```bash
+   mv english-lesson /Users/Shared/english-lesson
+   cd /Users/Shared/english-lesson
+   chmod -R +a "group:staff allow read,write,execute,append,delete,delete_child,readattr,writeattr,readextattr,writeextattr,readsecurity,file_inherit,directory_inherit" .
+   ```
+3. 把 App 產生在「應用程式」裡,每個帳號的 Launchpad 都會看到:
+   ```bash
+   ./scripts/make-app.sh /Applications
+   ```
+
+這樣所有帳號共用同一份資料:網站裡的使用者清單、進度與 API key 是同一份。訪客帳號不屬於 `staff` 群組,不適用。
+
+前一個帳號沒關掉 App 就切換使用者時,下一個帳號點 App 會直接接上已經在執行的那一份;前一個帳號登出後程式會停止,再點一次 App 即可。
+
 ## 一堂課的內容
 
 | 階段 | 內容 | 配分 |
