@@ -1502,3 +1502,37 @@ strong.tone-low {
 .prepared-note {
   min-height: 3.2em;
 }
+
+/* ---- 等待進度條 ---- */
+
+.wait-progress {
+  width: 100%;
+  max-width: 30rem;
+  margin: 0.9rem auto 0;
+}
+
+.wait-bar {
+  height: 0.75rem;
+  border-radius: 999px;
+  background: #eef1f7;
+  overflow: hidden;
+}
+
+.wait-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--primary);
+  transition: width 0.25s linear;
+}
+
+.wait-text {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.8rem;
+  margin: 0.35rem 0 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.wait-progress .small {
+  margin: 0.2rem 0 0;
+}

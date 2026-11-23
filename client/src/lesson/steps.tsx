@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { countWords, type LessonExercise } from '../../../shared/lesson.ts';
 import type { ChatTurn, ExerciseAnswer, Level, SessionState, SessionView } from '../../../shared/schema.ts';
+import { api } from '../api.ts';
+import { WaitProgress } from '../components/WaitProgress.tsx';
 import { useSpeech } from '../speech/SpeechContext.tsx';
-import { useElapsedSeconds } from '../useElapsedSeconds.ts';
 import { speak, speechRate } from '../speech/tts.ts';
 import { Conversation, conversationFinished } from './Conversation.tsx';
 import { allDone, ExerciseSequence, FlagButton, type Flagging } from './ExerciseSequence.tsx';
@@ -287,7 +288,23 @@ export function WritingStep({ session, writing, submitting, onWriting, onSubmit 
   const { lesson, level } = session;
   const words = countWords(writing);
   const enough = words >= lesson.writing.minWords;
-  const elapsed = useElapsedSeconds(submitting);
+  // 批改預估要等幾秒(由過去實際花費的時間推估),用來顯示進度條。查不到就不顯示進度條。
+  const [gradeSeconds, setGradeSeconds] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getTimings()
+      .then((timings) => {
+        if (!cancelled) setGradeSeconds(timings.grade);
+      })
+      .catch(() => {
+        // 沒有預估時間不影響交卷。
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   function submit() {
     if (words === 0 && !window.confirm('你還沒有寫任何內容。沒有交寫作的話,寫作這一項會是 0 分。確定要直接結束嗎?')) return;
@@ -330,9 +347,10 @@ export function WritingStep({ session, writing, submitting, onWriting, onSubmit 
 
       <div className="step-next">
         <button type="button" className="button button-primary button-large" onClick={submit} disabled={submitting}>
-          {submitting ? `Emma 老師正在批改… 已等待 ${elapsed} 秒` : '交給老師批改'}
+          {submitting ? 'Emma 老師正在批改…' : '交給老師批改'}
         </button>
       </div>
+      {submitting && gradeSeconds !== null && gradeSeconds > 0 && <WaitProgress expectedSeconds={gradeSeconds} />}
     </>
   );
 }

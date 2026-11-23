@@ -1,16 +1,22 @@
-import type { PreparedStatus } from '../shared/api.ts';
-import type { Lesson, LessonNovelty, Level, Minutes, Stage } from '../shared/schema.ts';
+import type { LengthStatus, PreparedStatus } from '../shared/api.ts';
+import { LESSON_MINUTES, type Lesson, type LessonNovelty, type Level, type Minutes, type Stage } from '../shared/schema.ts';
 import { AiError, type AiProvider } from './ai/provider.ts';
 import type { Db } from './db.ts';
 import { createLesson, type LessonStudent, type NewLesson } from './lessons.ts';
+import { STARTER_MINUTES, starterFor } from './starters/index.ts';
+import { expectedSeconds } from './timings.ts';
 
-// 預先備課:學生開始上一堂課時,就在背景把「下一堂」準備好存起來。
-// 下次按「開始」時直接取用,不必等 AI 產生(實測現場產生一堂課要 40–80 秒)。
+// 讓學生按「開始」時盡量不用等。一堂課有三個來源,依序嘗試:
 //
-// 每位使用者最多存一堂備好的課。它是照當時的等級、學習階段與課程長度產生的,
-// 取用時這三項有任何一項不同,就丟掉重新產生。
+// 1. 庫存:之前在背景備好的課。每位使用者在每個「等級 + 學習階段 + 課程長度」各存一堂,
+//    所以切到別的等級再切回來,原本備好的還在。
+// 2. 起始課:程式內建的 24 堂 20 分鐘課(4 個學習階段 × 6 個等級)。
+//    使用者在某個組合還沒上過課時,第一堂 20 分鐘的課直接用它,不呼叫 AI。
+// 3. 現場產生:以上都沒有時才請 AI 產生,這時學生需要等。
+//
+// 開課之後,程式會在背景把這個組合的 20、30、40 分鐘各補一堂進庫存。
 
-interface PreparedRow {
+interface StockRow {
   user_id: number;
   level: Level;
   stage: Stage;
@@ -18,91 +24,185 @@ interface PreparedRow {
   topic: string;
   grammar_point: string;
   lesson_json: string;
-  novelty_json: string;
+  novelty_json: string | null;
+}
+
+export type LessonSource = 'prepared' | 'starter' | 'generated';
+
+export interface PreparerOptions {
+  /** 是否在背景預先備課。關閉時仍然會使用內建的起始課。 */
+  enabled: boolean;
+  /** 背景要備哪些長度的課。 */
+  minutes: readonly Minutes[];
+  /** 目前時間(毫秒);測試時可以替換。 */
+  now?: () => number;
 }
 
 export interface Preparer {
-  /** 在背景準備下一堂課。已經有可用的、或正在準備中,就什麼都不做。不會等它完成。 */
-  ensure(student: LessonStudent, minutes: Minutes): void;
-  /**
-   * 開課時取用備好的課。背景還在準備時會等它做完。
-   * 符合這次要求的就取出(並從存放處移除);不符合的丟掉並回傳 null,由呼叫的人現場產生。
-   */
-  take(student: LessonStudent, minutes: Minutes): Promise<NewLesson | null>;
-  /** 目前的狀態,給開始上課的畫面顯示。 */
+  /** 開課時取得一堂課:庫存 → 起始課 → 現場產生。 */
+  obtain(student: LessonStudent, minutes: Minutes): Promise<{ made: NewLesson; source: LessonSource }>;
+  /** 在背景把這位學生目前的等級與階段各長度的庫存補齊,preferred 那個長度先做。不會等它完成。 */
+  replenish(student: LessonStudent, preferred: Minutes): void;
+  /** 各種課程長度現在能不能馬上開始、要等多久。 */
   status(student: Pick<LessonStudent, 'id' | 'level' | 'stage'>): PreparedStatus;
-  /** 等這位使用者的背景準備做完(測試用)。 */
+  /** 等這位使用者的背景工作全部做完(測試用)。 */
   idle(userId: number): Promise<void>;
 }
 
-export function createPreparer(db: Db, ai: AiProvider, enabled: boolean): Preparer {
-  // 正在背景準備中的工作。只存在記憶體裡:程式重啟後沒做完的就算了,下次開課時現場產生。
-  const inFlight = new Map<number, { minutes: Minutes; done: Promise<void> }>();
+export function createPreparer(db: Db, ai: AiProvider, options: PreparerOptions): Preparer {
+  const now = options.now ?? Date.now;
 
-  const stored = (userId: number) => db.prepare('SELECT * FROM prepared_lessons WHERE user_id = ?').get(userId) as PreparedRow | undefined;
-  const remove = (userId: number) => db.prepare('DELETE FROM prepared_lessons WHERE user_id = ?').run(userId);
-  const fits = (row: PreparedRow, student: Pick<LessonStudent, 'level' | 'stage'>, minutes?: Minutes) =>
-    row.level === student.level && row.stage === student.stage && (minutes === undefined || row.minutes === minutes);
+  // 同一位使用者一次只產生一堂課,依到達順序排隊。
+  // 兩堂同時產生的話,它們看到的「上過的課」一樣,會挑到同一個主題與文法重點。
+  const locks = new Map<number, Promise<unknown>>();
+  // 正在產生的那一堂(用來回報狀態與預估剩餘時間)。
+  const generating = new Map<number, { level: Level; stage: Stage; minutes: Minutes; startedAt: number }>();
+  // 背景工作:每位使用者最多一個,workers 存它的完成訊號,wanted 存它最新的目標。
+  const workers = new Map<number, Promise<void>>();
+  const wanted = new Map<number, { student: LessonStudent; preferred: Minutes }>();
 
-  function save(userId: number, made: NewLesson): void {
+  function withLock<T>(userId: number, work: () => Promise<T>): Promise<T> {
+    const previous = locks.get(userId) ?? Promise.resolve();
+    const next = previous.then(work, work);
+    // 留下一個不會失敗的版本給下一個排隊的人接著等。
+    const settled = next.catch(() => undefined);
+    locks.set(userId, settled);
+    void settled.then(() => {
+      if (locks.get(userId) === settled) locks.delete(userId);
+    });
+    return next;
+  }
+
+  const stocked = (student: Pick<LessonStudent, 'id' | 'level' | 'stage'>, minutes: Minutes) =>
+    db.prepare('SELECT * FROM prepared_lessons WHERE user_id = ? AND level = ? AND stage = ? AND minutes = ?').get(student.id, student.level, student.stage, minutes) as
+      | StockRow
+      | undefined;
+
+  /** 從庫存取出一堂課(取出後就從庫存移除)。 */
+  function takeStock(student: LessonStudent, minutes: Minutes): NewLesson | null {
+    const row = stocked(student, minutes);
+    if (!row) return null;
+    db.prepare('DELETE FROM prepared_lessons WHERE user_id = ? AND level = ? AND stage = ? AND minutes = ?').run(student.id, student.level, student.stage, minutes);
+    return {
+      level: row.level,
+      stage: row.stage,
+      minutes: row.minutes,
+      topic: row.topic,
+      grammarPoint: row.grammar_point,
+      lesson: JSON.parse(row.lesson_json) as Lesson,
+      novelty: row.novelty_json ? (JSON.parse(row.novelty_json) as LessonNovelty) : null,
+    };
+  }
+
+  function putStock(userId: number, made: NewLesson): void {
     db.prepare(
       `INSERT OR REPLACE INTO prepared_lessons (user_id, level, stage, minutes, topic, grammar_point, lesson_json, novelty_json, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
-    ).run(userId, made.level, made.stage, made.minutes, made.topic, made.grammarPoint, JSON.stringify(made.lesson), JSON.stringify(made.novelty));
+    ).run(userId, made.level, made.stage, made.minutes, made.topic, made.grammarPoint, JSON.stringify(made.lesson), made.novelty ? JSON.stringify(made.novelty) : null);
+  }
+
+  /** 這位使用者在這個等級與學習階段是否還沒上過任何課(起始課只給這種情況用)。 */
+  function isNewCombination(student: Pick<LessonStudent, 'id' | 'level' | 'stage'>): boolean {
+    const row = db.prepare('SELECT 1 FROM sessions WHERE user_id = ? AND level = ? AND stage = ? AND retake_of IS NULL LIMIT 1').get(student.id, student.level, student.stage);
+    return row === undefined;
+  }
+
+  const starterApplies = (student: Pick<LessonStudent, 'id' | 'level' | 'stage'>, minutes: Minutes) =>
+    minutes === STARTER_MINUTES && isNewCombination(student);
+
+  /** 產生一堂課;期間記下「正在產生哪一堂」,讓畫面可以顯示狀態與預估時間。 */
+  async function generate(student: LessonStudent, minutes: Minutes): Promise<NewLesson> {
+    generating.set(student.id, { level: student.level, stage: student.stage, minutes, startedAt: now() });
+    try {
+      return await createLesson(db, ai, student, minutes);
+    } finally {
+      generating.delete(student.id);
+    }
+  }
+
+  /** 背景要補的長度:先做 preferred(學生剛用掉的那個長度最可能再用),其餘照 20、30、40 的順序。 */
+  function missingLengths(student: LessonStudent, preferred: Minutes): Minutes[] {
+    const order = [preferred, ...LESSON_MINUTES.filter((minutes) => minutes !== preferred)];
+    return order.filter((minutes) => options.minutes.includes(minutes) && !stocked(student, minutes));
+  }
+
+  async function work(userId: number): Promise<void> {
+    for (;;) {
+      // 每做完一堂就重新看一次目標:學生可能已經換了等級,或某個長度已經被補上。
+      const target = wanted.get(userId);
+      if (!target) return;
+      const [minutes] = missingLengths(target.student, target.preferred);
+      if (minutes === undefined) return;
+      try {
+        await withLock(userId, async () => {
+          if (stocked(target.student, minutes)) return;
+          putStock(userId, await generate(target.student, minutes));
+          console.log(`[prepare] 使用者 ${userId}:${target.student.level} ${minutes} 分鐘的課已經備好`);
+        });
+      } catch (err) {
+        // 失敗多半是額度用完或模型忙線。剩下的長度先不做,避免一直碰壁;下次開課或上完課時會再試。
+        const reason = err instanceof AiError ? `${err.code}:${err.detail ?? err.message}` : String(err);
+        console.warn(`[prepare] 使用者 ${userId}:${minutes} 分鐘的課沒有備好(${reason}),暫停背景備課`);
+        return;
+      }
+    }
   }
 
   return {
-    ensure(student, minutes) {
-      if (!enabled || inFlight.has(student.id)) return;
-      const existing = stored(student.id);
-      if (existing && fits(existing, student, minutes)) return;
+    async obtain(student, minutes) {
+      const ready = takeStock(student, minutes);
+      if (ready) return { made: ready, source: 'prepared' };
 
-      const done = (async () => {
-        try {
-          save(student.id, await createLesson(db, ai, student, minutes));
-          console.log(`[prepare] 使用者 ${student.id} 的下一堂課(${minutes} 分鐘)已經備好`);
-        } catch (err) {
-          // 背景準備失敗不影響正在上的課;下次開課時會現場產生,到時候有問題再明確告訴學生。
-          const reason = err instanceof AiError ? `${err.code}:${err.detail ?? err.message}` : String(err);
-          console.warn(`[prepare] 使用者 ${student.id} 的下一堂課沒有備好(${reason})`);
-        } finally {
-          inFlight.delete(student.id);
-        }
-      })();
-      inFlight.set(student.id, { minutes, done });
+      if (starterApplies(student, minutes)) {
+        const starter = starterFor(student.level, student.stage);
+        return { made: { level: student.level, stage: student.stage, minutes, ...starter, novelty: null }, source: 'starter' };
+      }
+
+      // 排隊等這位使用者正在產生的那一堂做完,再輪到自己。
+      return withLock(student.id, async () => {
+        // 排隊的時候,背景可能剛好把這個長度備好了。
+        const arrived = takeStock(student, minutes);
+        if (arrived) return { made: arrived, source: 'prepared' as const };
+        return { made: await generate(student, minutes), source: 'generated' as const };
+      });
     },
 
-    async take(student, minutes) {
-      await inFlight.get(student.id)?.done;
-      const row = stored(student.id);
-      if (!row) return null;
-      remove(student.id);
-      if (!fits(row, student, minutes)) {
-        console.log(`[prepare] 使用者 ${student.id} 備好的課是 ${row.level}/${row.minutes} 分鐘,這次要 ${student.level}/${minutes} 分鐘,改為現場產生`);
-        return null;
-      }
-      return {
-        level: row.level,
-        stage: row.stage,
-        minutes: row.minutes,
-        topic: row.topic,
-        grammarPoint: row.grammar_point,
-        lesson: JSON.parse(row.lesson_json) as Lesson,
-        novelty: JSON.parse(row.novelty_json) as LessonNovelty,
-      };
+    replenish(student, preferred) {
+      if (!options.enabled) return;
+      wanted.set(student.id, { student, preferred });
+      if (workers.has(student.id)) return;
+      const done = work(student.id).finally(() => {
+        workers.delete(student.id);
+        wanted.delete(student.id);
+      });
+      workers.set(student.id, done);
     },
 
     status(student) {
-      const working = inFlight.get(student.id);
-      if (working) return { state: 'preparing', minutes: working.minutes };
-      const row = stored(student.id);
-      // 等級或學習階段改過之後,那堂備好的課已經不適用了。
-      if (row && fits(row, student)) return { state: 'ready', minutes: row.minutes };
-      return { state: 'none', minutes: null };
+      const expected = expectedSeconds(db, 'lesson');
+      const current = generating.get(student.id);
+      // 正在產生的那一堂預估還要多久。已經超過預估時間時,至少算幾秒,不顯示 0。
+      const remaining = current ? Math.max(Math.min(5, expected), expected - (now() - current.startedAt) / 1000) : 0;
+      const sameCombination = (other: { level: Level; stage: Stage }) => other.level === student.level && other.stage === student.stage;
+      // 背景工作接下來還會替這個等級與階段準備哪些長度(含正在產生的那一堂)。
+      const target = workers.has(student.id) ? wanted.get(student.id) : undefined;
+      const queued = target && sameCombination(target.student) ? missingLengths(target.student, target.preferred) : [];
+
+      const lengths = LESSON_MINUTES.map((minutes): LengthStatus => {
+        if (stocked(student, minutes)) return { minutes, state: 'ready', source: 'prepared', waitSeconds: 0 };
+        if (starterApplies(student, minutes)) return { minutes, state: 'ready', source: 'starter', waitSeconds: 0 };
+        // 正在產生的就是這一堂:等它做完就好。
+        if (current && sameCombination(current) && current.minutes === minutes) return { minutes, state: 'preparing', source: null, waitSeconds: Math.round(remaining) };
+        // 其餘的現在按開始的話,要先等正在產生的那一堂做完,再產生自己這一堂(學生的要求會排在背景工作前面)。
+        // 背景已經排定要做的標成 preparing:不必按開始,等一下也會備好。
+        return { minutes, state: queued.includes(minutes) ? 'preparing' : 'none', source: null, waitSeconds: Math.round(remaining + expected) };
+      });
+      return { lengths };
     },
 
     async idle(userId) {
-      await inFlight.get(userId)?.done;
+      await workers.get(userId);
+      await locks.get(userId);
     },
   };
 }

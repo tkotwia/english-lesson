@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path';
 import { createProvider, geminiOptionsFromEnv } from './ai/index.ts';
 import { createApp } from './app.ts';
 import { openDb } from './db.ts';
+import { LESSON_MINUTES } from '../shared/schema.ts';
 
 if (existsSync('.env')) process.loadEnvFile('.env');
 
@@ -12,6 +13,10 @@ const dbPath = join(dataDir, 'english.db');
 const isProduction = process.env.NODE_ENV === 'production';
 // 預設開啟預先備課;在 .env 設 AI_PREPARE_NEXT=off 可以關掉(每次按開始時才現場產生)。
 const prepareAhead = (process.env.AI_PREPARE_NEXT ?? 'on').trim().toLowerCase() !== 'off';
+// 背景要備哪些長度的課。預設三種都備;只想省額度的話,可以設成例如 AI_PREPARE_MINUTES=20。
+const requestedMinutes = (process.env.AI_PREPARE_MINUTES ?? '').split(',').map((value) => Number(value.trim()));
+const chosenMinutes = LESSON_MINUTES.filter((minutes) => requestedMinutes.includes(minutes));
+const prepareMinutes = chosenMinutes.length > 0 ? chosenMinutes : LESSON_MINUTES;
 
 const db = openDb(dbPath);
 const ai = createProvider(process.env);
@@ -20,6 +25,7 @@ const app = createApp({
   ai,
   staticDir: isProduction ? resolve('dist/client') : undefined,
   prepareAhead,
+  prepareMinutes,
 });
 
 // 只接受這台電腦自己的連線:資料庫裡有使用者的 API key,不對區域網路開放。
@@ -32,7 +38,7 @@ app.listen(port, '127.0.0.1', () => {
       `[server] 思考程度:品質類 ${thinking.quality ?? '模型預設'}、對話類 ${thinking.chat ?? '模型預設'};逾時:品質類 ${timeoutMs.quality! / 1000} 秒、對話類 ${timeoutMs.chat! / 1000} 秒`,
     );
   }
-  console.log(`[server] 預先備課:${prepareAhead ? '開啟(上課時在背景準備下一堂)' : '關閉'}`);
+  console.log(`[server] 預先備課:${prepareAhead ? `開啟(上課時在背景準備 ${prepareMinutes.join('、')} 分鐘的課)` : '關閉'};每個等級的第一堂 20 分鐘課使用內建的起始課`);
   if (isProduction) {
     console.log(`[server] 請用 Chrome 開啟 http://localhost:${port}`);
   } else {

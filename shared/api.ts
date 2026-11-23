@@ -44,12 +44,26 @@ export interface ReviewListItem extends ReviewItemView {
   misses: number;
 }
 
-/** 下一堂課有沒有預先備好。 */
+/** 某一種課程長度現在能不能馬上開始。 */
+export interface LengthStatus {
+  minutes: 20 | 30 | 40;
+  /** ready:可以馬上開始;preparing:背景正在準備或已經排定要準備這一堂;none:按開始後才會請老師現場備課。 */
+  state: 'ready' | 'preparing' | 'none';
+  /** 可以馬上開始的原因:prepared 是背景備好的課,starter 是內建的起始課。 */
+  source: 'prepared' | 'starter' | null;
+  /** 現在按開始,預估要等幾秒(由過去實際花費的時間推估);可以馬上開始時是 0。 */
+  waitSeconds: number;
+}
+
+/** 這位使用者在目前的等級與學習階段下,各種課程長度的準備狀況。 */
 export interface PreparedStatus {
-  /** none:沒有;preparing:正在背景準備;ready:已經備好。 */
-  state: 'none' | 'preparing' | 'ready';
-  /** 備好(或正在準備)的是幾分鐘的課;選這個長度可以馬上開始。 */
-  minutes: 20 | 30 | 40 | null;
+  lengths: LengthStatus[];
+}
+
+/** 等待 AI 時的預估秒數,用來畫進度條。由過去實際花費的時間推估。 */
+export interface TaskTimings {
+  lesson: number;
+  grade: number;
 }
 
 export const LevelDecisionSchema = z.object({

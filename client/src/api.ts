@@ -1,4 +1,4 @@
-import type { CalendarMonth, PreparedStatus, ProgressSummary, ReviewListItem } from '../../shared/api.ts';
+import type { CalendarMonth, PreparedStatus, ProgressSummary, ReviewListItem, TaskTimings } from '../../shared/api.ts';
 import type { ReviewItemView } from '../../shared/lesson.ts';
 import type {
   ChatTurn,
@@ -69,6 +69,7 @@ export const api = {
   abandonSession: (id: number) => request<void>('DELETE', `/sessions/${id}`),
   retakeSession: (id: number) => request<SessionView>('POST', `/sessions/${id}/retake`),
   getPrepared: (userId: number) => request<PreparedStatus>('GET', `/sessions/prepared?userId=${userId}`),
+  getTimings: () => request<TaskTimings>('GET', '/sessions/timings'),
   flagSession: (id: number, target: string) => request<{ flags: string[] }>('POST', `/sessions/${id}/flags`, { target }),
   chatSession: (id: number, message: string) => request<{ chat: ChatTurn[] }>('POST', `/sessions/${id}/chat`, { message }),
   askSession: (id: number, question: string) =>

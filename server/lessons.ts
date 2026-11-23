@@ -6,6 +6,7 @@ import { usageRecorder } from './ai/usage.ts';
 import type { Db } from './db.ts';
 import { weakVocabWords } from './items.ts';
 import { checkNovelty, DUPLICATE_THRESHOLD, type PastLesson } from './novelty.ts';
+import { recordTaskTiming } from './timings.ts';
 
 // 產生一堂新課:決定主題與文法重點、請 AI 產生、再和舊課比對。
 // 「按下開始時現場備課」與「上課時在背景預先備好下一堂」都走這裡。
@@ -31,7 +32,8 @@ export interface NewLesson {
   topic: string;
   grammarPoint: string;
   lesson: Lesson;
-  novelty: LessonNovelty;
+  /** 產生時和舊課比對的結果。內建的起始課不是當場產生的,沒有這項。 */
+  novelty: LessonNovelty | null;
 }
 
 interface HistoryLesson extends PastLesson {
@@ -41,13 +43,20 @@ interface HistoryLesson extends PastLesson {
 }
 
 /**
- * 這位使用者上過的所有課(由新到舊),用來決定新課的主題與文法重點,並做重覆比對。
- * 包含正在上的那一堂;重上的課內容和原本那堂相同,不重覆計入。
+ * 這位使用者已經「用掉」的所有課(由新到舊),用來決定新課的主題與文法重點,並做重覆比對。
+ * - 上過的課,包含正在上的那一堂;重上的課內容和原本那堂相同,不重覆計入。
+ * - 已經備好、還沒上的課也算。否則同時備好的 20、30、40 分鐘三堂會挑到同一個主題與文法重點。
  */
 function lessonHistory(db: Db, userId: number): HistoryLesson[] {
-  const rows = db
+  type Row = { id: number; local_date: string; level: Level; topic: string; grammar_point: string | null; lesson_json: string };
+  const prepared = db
+    .prepare(`SELECT 0 AS id, date(created_at) AS local_date, level, topic, grammar_point, lesson_json FROM prepared_lessons WHERE user_id = ? ORDER BY created_at DESC`)
+    .all(userId) as unknown as Row[];
+  const taken = db
     .prepare('SELECT id, local_date, level, topic, grammar_point, lesson_json FROM sessions WHERE user_id = ? AND retake_of IS NULL ORDER BY id DESC')
-    .all(userId) as unknown as { id: number; local_date: string; level: Level; topic: string; grammar_point: string | null; lesson_json: string }[];
+    .all(userId) as unknown as Row[];
+  // 備好的課是最近才安排的,排在最前面。
+  const rows = [...prepared, ...taken];
   return rows.map((row) => {
     const lesson = JSON.parse(row.lesson_json) as Lesson;
     return {
@@ -65,6 +74,7 @@ function lessonHistory(db: Db, userId: number): HistoryLesson[] {
 }
 
 export async function createLesson(db: Db, ai: AiProvider, student: LessonStudent, minutes: Minutes): Promise<NewLesson> {
+  const startedAt = Date.now();
   // 主題與文法重點由程式輪流指定(最久沒上過的優先),不交給 AI 自己挑。
   const history = lessonHistory(db, student.id);
   const topic = pickTopic(
@@ -112,5 +122,7 @@ export async function createLesson(db: Db, ai: AiProvider, student: LessonStuden
     }
   }
 
+  // 記下這次總共等了多久(含換模型與重新產生),之後用來預估等待時間。
+  recordTaskTiming(db, 'lesson', Date.now() - startedAt);
   return { level: student.level, stage: student.stage, minutes, topic, grammarPoint, lesson, novelty: { ...check, regenerated } };
 }

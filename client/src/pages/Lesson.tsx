@@ -1,11 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
-import type { PreparedStatus } from '../../../shared/api.ts';
-import { LESSON_MINUTES, type Minutes, type SessionView } from '../../../shared/schema.ts';
+import type { LengthStatus, PreparedStatus } from '../../../shared/api.ts';
+import { LESSON_MINUTES, type Level, type Minutes, type SessionView } from '../../../shared/schema.ts';
+import { formatSeconds } from '../../../shared/wait.ts';
 import { api, errorCode, errorDetail, errorMessage } from '../api.ts';
+import { WaitProgress } from '../components/WaitProgress.tsx';
 import { LessonPlayer } from '../lesson/LessonPlayer.tsx';
 import { TEACHER_NAME } from '../lesson/lines.ts';
-import { useElapsedSeconds } from '../useElapsedSeconds.ts';
 import { useActiveUser } from '../userContext.tsx';
 
 export function Lesson() {
@@ -41,15 +42,33 @@ export function Lesson() {
 
 const MINUTES_HINT: Record<Minutes, string> = { 20: '精簡', 30: '標準', 40: '加強' };
 
+/** 還沒自己選過長度時的預設:先挑可以馬上開始的,依這個順序;都不能馬上開始就選標準的 30 分鐘。 */
+const DEFAULT_ORDER: readonly Minutes[] = [30, 20, 40];
+
+/** 查不到備課狀態時用的預估等待秒數(與伺服器沒有紀錄時的預設值相同)。 */
+const FALLBACK_WAIT_SECONDS = 60;
+
+/** 選定的長度現在是什麼狀況、按下開始會怎樣。 */
+function describeLength(length: LengthStatus | undefined, level: Level): string {
+  if (!length) return `按「開始」後,${TEACHER_NAME}會依你的等級(${level})備課。`;
+  if (length.source === 'starter') return `這是 ${level} 的起始課(內建的第一堂 ${length.minutes} 分鐘課),按「開始」馬上上課,不用等。`;
+  if (length.state === 'ready') return `這堂 ${level} 的 ${length.minutes} 分鐘課已經備好,按「開始」馬上上課,不用等。`;
+  if (length.state === 'preparing') {
+    return `${TEACHER_NAME}正在背景準備這堂課。現在按「開始」預估要等 ${formatSeconds(length.waitSeconds)};也可以等它顯示「已備好」再開始。`;
+  }
+  return `${length.minutes} 分鐘還沒有備好的課。按「開始」後${TEACHER_NAME}會現場備課,預估要等 ${formatSeconds(length.waitSeconds)}。`;
+}
+
 function StartPanel({ onStarted }: { onStarted: (session: SessionView) => void }) {
   const user = useActiveUser();
   const [minutes, setMinutes] = useState<Minutes>(30);
-  const [starting, setStarting] = useState(false);
+  // 按下開始之後預估要等幾秒;null 表示還沒按。0 表示課已經備好,不需要進度條。
+  const [waitSeconds, setWaitSeconds] = useState<number | null>(null);
   const [error, setError] = useState<{ message: string; detail?: string; quota: boolean } | null>(null);
-  const elapsed = useElapsedSeconds(starting);
-  // 下一堂課有沒有預先備好;備好的長度可以馬上開始。
+  // 各種長度的課有沒有備好;備好的可以馬上開始。
   const [prepared, setPrepared] = useState<PreparedStatus | null>(null);
-  const [choseMinutes, setChoseMinutes] = useState(false);
+  const pickedDefault = useRef(false);
+  const starting = waitSeconds !== null;
 
   useEffect(() => {
     let cancelled = false;
@@ -61,7 +80,7 @@ function StartPanel({ onStarted }: { onStarted: (session: SessionView) => void }
           if (cancelled) return;
           setPrepared(status);
           // 背景還在準備時,隔幾秒再問一次,備好了畫面就會更新。
-          if (status.state === 'preparing') timer = window.setTimeout(load, 3000);
+          if (status.lengths.some((length) => length.state === 'preparing')) timer = window.setTimeout(load, 3000);
         })
         .catch(() => {
           // 查不到備課狀態不影響開課,最多就是現場備課。
@@ -72,23 +91,27 @@ function StartPanel({ onStarted }: { onStarted: (session: SessionView) => void }
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [user.id]);
+  }, [user.id, user.level, user.stage]);
 
-  // 還沒自己選過長度時,預設選已經備好的那個長度。
+  // 第一次拿到備課狀態時,預設選一個可以馬上開始的長度。只做一次,之後不會自己跳到別的選項。
   useEffect(() => {
-    if (!choseMinutes && prepared?.minutes) setMinutes(prepared.minutes);
-  }, [prepared, choseMinutes]);
+    if (!prepared || pickedDefault.current) return;
+    pickedDefault.current = true;
+    const ready = DEFAULT_ORDER.find((value) => prepared.lengths.some((length) => length.minutes === value && length.state === 'ready'));
+    if (ready) setMinutes(ready);
+  }, [prepared]);
 
-  const readyMinutes = prepared?.state === 'ready' ? prepared.minutes : null;
+  const statusOf = (value: Minutes) => prepared?.lengths.find((length) => length.minutes === value);
+  const selected = statusOf(minutes);
 
   async function start() {
-    setStarting(true);
+    setWaitSeconds(selected ? selected.waitSeconds : FALLBACK_WAIT_SECONDS);
     setError(null);
     try {
       onStarted(await api.startSession(user.id, minutes));
     } catch (err) {
       setError({ message: errorMessage(err), detail: errorDetail(err), quota: errorCode(err) === 'quota' });
-      setStarting(false);
+      setWaitSeconds(null);
     }
   }
 
@@ -107,33 +130,20 @@ function StartPanel({ onStarted }: { onStarted: (session: SessionView) => void }
               className={`choice${minutes === value ? ' is-selected' : ''}`}
               onClick={() => {
                 setMinutes(value);
-                setChoseMinutes(true);
+                // 自己選過之後,就不再替他改成預設的長度。
+                pickedDefault.current = true;
               }}
               disabled={starting}
             >
               <strong>{value} 分鐘</strong>
               <small>{MINUTES_HINT[value]}</small>
-              {readyMinutes === value && <span className="tag tag-mastered">已備好</span>}
+              {statusOf(value)?.state === 'ready' && <span className="tag tag-mastered">已備好</span>}
+              {statusOf(value)?.state === 'preparing' && <span className="tag">準備中</span>}
             </button>
           ))}
         </div>
         <p className="muted prepared-note">
-          {readyMinutes === minutes && <>這堂 {user.level} 的課已經備好,按「開始」馬上上課。</>}
-          {readyMinutes !== null && readyMinutes !== minutes && (
-            <>
-              已經備好的是 {readyMinutes} 分鐘的課。改選 {minutes} 分鐘需要現場備課(實測約 40–80 秒),而且備好的那一堂會作廢。
-            </>
-          )}
-          {prepared?.state === 'preparing' && (
-            <>
-              {TEACHER_NAME}正在準備一堂 {prepared.minutes} 分鐘的課。現在按「開始」,等她準備好就會開始。
-            </>
-          )}
-          {(!prepared || prepared.state === 'none') && (
-            <>
-              按「開始」後,{TEACHER_NAME}會依你的等級({user.level})現場備課,實測約 40–80 秒。之後每次上課時,她都會先把下一堂備好。
-            </>
-          )}
+          {describeLength(selected, user.level)} 開始上課後,{TEACHER_NAME}會在背景把之後各種長度的課先備好。
         </p>
 
         {!user.hasApiKey ? (
@@ -142,11 +152,11 @@ function StartPanel({ onStarted }: { onStarted: (session: SessionView) => void }
           </p>
         ) : (
           <button type="button" className="button button-primary button-large" onClick={start} disabled={starting}>
-            {starting ? `${TEACHER_NAME}正在備課… 已等待 ${elapsed} 秒` : '開始'}
+            {!starting ? '開始' : waitSeconds > 0 ? `${TEACHER_NAME}正在備課…` : '正在開始…'}
           </button>
         )}
 
-        {starting && readyMinutes !== minutes && <p className="muted small">現場備課實測約 40–80 秒。模型忙線時會自動改用備援,可能更久。</p>}
+        {starting && waitSeconds > 0 && <WaitProgress expectedSeconds={waitSeconds} />}
 
         {error && (
           <div className="alert alert-error">

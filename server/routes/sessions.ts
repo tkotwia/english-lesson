@@ -40,8 +40,9 @@ import {
   recordReviewResult,
   type ItemContent,
 } from '../items.ts';
-import { createLesson, type LessonStudent } from '../lessons.ts';
+import type { LessonStudent } from '../lessons.ts';
 import { createPreparer } from '../prepared.ts';
+import { recordTaskTiming, taskTimings } from '../timings.ts';
 import { getUserRow, parseId } from './users.ts';
 
 interface SessionRow {
@@ -132,13 +133,15 @@ function flagTarget(lesson: Lesson, sessionId: number, target: string): { kind: 
 }
 
 export interface SessionsOptions {
-  /** 是否在上課時於背景預先備好下一堂課。 */
+  /** 是否在上課時於背景預先備好之後的課。 */
   prepareAhead: boolean;
+  /** 背景要備哪些長度的課。 */
+  prepareMinutes: readonly Minutes[];
 }
 
 export function sessionsRouter(db: Db, ai: AiProvider, options: SessionsOptions): express.Router {
   const router = express.Router();
-  const preparer = createPreparer(db, ai, options.prepareAhead);
+  const preparer = createPreparer(db, ai, { enabled: options.prepareAhead, minutes: options.prepareMinutes });
   // 防止連點造成同一位使用者同時產生兩堂課或批改兩次,白白消耗額度。
   const generating = new Set<number>();
   const completing = new Set<number>();
@@ -151,10 +154,15 @@ export function sessionsRouter(db: Db, ai: AiProvider, options: SessionsOptions)
     res.json(row ? toView(db, row) : null);
   });
 
-  // 下一堂課備好了沒有:開始上課的畫面用它告訴學生哪個長度可以馬上開始。
+  // 各種課程長度現在能不能馬上開始、要等多久:開始上課的畫面用它顯示「已備好」與進度條。
   router.get('/prepared', (req, res) => {
     const user = getUserRow(db, parseId(req.query.userId));
     res.json(preparer.status(user));
+  });
+
+  // 等 AI 產生課程或批改時,預估要等幾秒(由過去實際花費的時間推估)。
+  router.get('/timings', (_req, res) => {
+    res.json(taskTimings(db));
   });
 
   router.post('/', async (req, res) => {
@@ -173,8 +181,8 @@ export function sessionsRouter(db: Db, ai: AiProvider, options: SessionsOptions)
 
     generating.add(userId);
     try {
-      // 先看有沒有預先備好的課(背景還在準備就等它做完);沒有或不適用才現場產生。
-      const made = (await preparer.take(student, minutes)) ?? (await createLesson(db, ai, student, minutes));
+      // 依序嘗試:背景備好的課 → 內建的起始課 → 請 AI 現場產生(只有這種情況需要等)。
+      const { made } = await preparer.obtain(student, minutes);
       const today = localDate();
       // 開課當下到期的複習項目就固定下來,之後才到期的留到下一堂。
       const review = dueItems(db, userId, today, REVIEW_LIMIT[minutes]);
@@ -192,14 +200,14 @@ export function sessionsRouter(db: Db, ai: AiProvider, options: SessionsOptions)
           minutes,
           made.topic,
           made.grammarPoint,
-          JSON.stringify(made.novelty),
+          made.novelty ? JSON.stringify(made.novelty) : null,
           JSON.stringify(made.lesson),
           JSON.stringify(review),
           JSON.stringify(state),
         );
       res.status(201).json(toView(db, getSessionRow(db, Number(result.lastInsertRowid))));
-      // 這堂課開始了,趁上課的這段時間在背景把下一堂準備好。
-      preparer.ensure(student, minutes);
+      // 這堂課開始了,趁上課的這段時間在背景把之後的課(各種長度)準備好。
+      preparer.replenish(student, minutes);
     } finally {
       generating.delete(userId);
     }
@@ -373,6 +381,7 @@ export function sessionsRouter(db: Db, ai: AiProvider, options: SessionsOptions)
         const objectiveSections = buildSessionResult(lesson, state, null, review).sections.filter(
           (s) => s.section !== 'writing' && s.section !== 'speaking',
         );
+        const gradingStartedAt = Date.now();
         grade = await ai.generateJson({
           tier: 'quality',
           task: 'grade',
@@ -381,6 +390,7 @@ export function sessionsRouter(db: Db, ai: AiProvider, options: SessionsOptions)
           schema: GradeSchema,
           onUsage: usageRecorder(db, row.user_id),
         });
+        recordTaskTiming(db, 'grade', Date.now() - gradingStartedAt);
       }
 
       const result = buildSessionResult(lesson, state, grade, review);
@@ -426,7 +436,7 @@ export function sessionsRouter(db: Db, ai: AiProvider, options: SessionsOptions)
       res.json(toView(db, getSessionRow(db, id)));
       // 開課時的背景準備如果失敗了(例如模型忙線),上完課時再試一次。
       const owner = getUserRow(db, row.user_id);
-      if (owner.api_key) preparer.ensure({ id: owner.id, level: owner.level, stage: owner.stage, apiKey: owner.api_key }, row.minutes);
+      if (owner.api_key) preparer.replenish({ id: owner.id, level: owner.level, stage: owner.stage, apiKey: owner.api_key }, row.minutes);
     } finally {
       completing.delete(id);
     }

@@ -75,16 +75,10 @@ CREATE TABLE IF NOT EXISTS item_events (
 
 CREATE INDEX IF NOT EXISTS idx_item_events_date ON item_events (item_id, date);
 
-CREATE TABLE IF NOT EXISTS prepared_lessons (
-  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-  level TEXT NOT NULL,
-  stage TEXT NOT NULL,
-  minutes INTEGER NOT NULL,
-  topic TEXT NOT NULL,
-  grammar_point TEXT NOT NULL,
-  lesson_json TEXT NOT NULL,
-  novelty_json TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+CREATE TABLE IF NOT EXISTS task_timings (
+  task TEXT PRIMARY KEY,
+  average_ms REAL NOT NULL,
+  samples INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS level_decisions (
@@ -106,12 +100,52 @@ export function openDb(path: string): Db {
   db.exec('PRAGMA foreign_keys = ON;');
   if (path !== ':memory:') db.exec('PRAGMA journal_mode = WAL;');
   db.exec(SCHEMA);
+  migratePreparedLessons(db);
   // 較早版本建立的資料庫沒有這些欄位;補上欄位,原有的資料不變。
   ensureColumn(db, 'sessions', 'retake_of', 'INTEGER REFERENCES sessions(id) ON DELETE SET NULL');
   ensureColumn(db, 'sessions', 'grammar_point', 'TEXT');
   ensureColumn(db, 'sessions', 'novelty_json', 'TEXT');
   ensureColumn(db, 'api_usage', 'total_ms', 'INTEGER NOT NULL DEFAULT 0');
   return db;
+}
+
+// 預先備好的課。每位使用者在每個「等級 + 學習階段 + 課程長度」各存一堂,
+// 所以切換等級之後,原本備好的課還留著,切回來可以直接用。
+const PREPARED_LESSONS = `
+CREATE TABLE prepared_lessons (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  level TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  minutes INTEGER NOT NULL,
+  topic TEXT NOT NULL,
+  grammar_point TEXT NOT NULL,
+  lesson_json TEXT NOT NULL,
+  novelty_json TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, level, stage, minutes)
+);
+`;
+
+/**
+ * 建立預先備課的資料表。較早的版本每位使用者只存一堂(主鍵只有 user_id);
+ * 遇到那種舊表就重建成新的格式,並把原本備好的那一堂搬過來。
+ */
+function migratePreparedLessons(db: Db): void {
+  const columns = db.prepare(`PRAGMA table_info(prepared_lessons)`).all() as unknown as { name: string; pk: number }[];
+  if (columns.length === 0) {
+    db.exec(PREPARED_LESSONS);
+    return;
+  }
+  const keyColumns = columns.filter((column) => column.pk > 0).map((column) => column.name);
+  if (keyColumns.length > 1) return; // 已經是新的格式
+
+  transaction(db, () => {
+    db.exec('ALTER TABLE prepared_lessons RENAME TO prepared_lessons_old');
+    db.exec(PREPARED_LESSONS);
+    db.exec(`INSERT OR IGNORE INTO prepared_lessons (user_id, level, stage, minutes, topic, grammar_point, lesson_json, novelty_json, created_at)
+             SELECT user_id, level, stage, minutes, topic, grammar_point, lesson_json, novelty_json, created_at FROM prepared_lessons_old`);
+    db.exec('DROP TABLE prepared_lessons_old');
+  });
 }
 
 /** 資料表缺少某個欄位時補上。只新增欄位,不會改動或刪除既有資料。 */
