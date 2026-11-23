@@ -23,7 +23,7 @@ if [ ! -d "$OUT_DIR" ]; then
   echo "找不到資料夾:$OUT_DIR" >&2
   exit 1
 fi
-chmod +x "$PROJECT_DIR/start.command" "$PROJECT_DIR/scripts/app-control.sh"
+chmod +x "$PROJECT_DIR/scripts/app-control.sh"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT

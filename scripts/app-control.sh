@@ -2,6 +2,7 @@
 # 給「英文課.app」用的控制腳本。App 本身只是一層薄薄的外殼,實際的啟動與停止都在這裡。
 #
 #   launch [擁有者行程編號]  在背景啟動伺服器(已經在執行就不重複啟動)
+#   serve                   launch 在背景執行的工作:安裝套件、建置網頁、執行伺服器(不直接使用)
 #   state                   ready(可以用了)、starting(啟動中)或 stopped(沒有在執行)
 #   open                    用 Chrome 開啟網站
 #   stop                    停止這個帳號啟動的伺服器
@@ -21,7 +22,7 @@ if ! command -v node >/dev/null 2>&1; then
   [ -n "$LOGIN_PATH" ] && export PATH="$LOGIN_PATH:$PATH"
 fi
 
-# 連接埠的決定方式和 start.command 相同:環境變數 → .env → 預設值。
+# 連接埠:優先用環境變數,其次用 .env 裡的設定,都沒有就用預設值。
 PORT_FROM_FILE=$(grep -E '^PORT=' .env 2>/dev/null | tail -1 | cut -d= -f2 | tr -d '[:space:]')
 PORT="${PORT:-${PORT_FROM_FILE:-3210}}"
 export PORT
@@ -37,14 +38,14 @@ server_up() {
   [ "$(curl -s --max-time 2 "http://127.0.0.1:${PORT}/api/users" | head -c 1)" = "[" ]
 }
 
-# 紀錄檔裡記的行程編號,而且確認它現在仍然是我們啟動的 start.command。
+# 紀錄檔裡記的行程編號,而且確認它現在仍然是我們啟動的 serve。
 # 行程結束後,系統可能把同一個編號發給別的程式;不確認就使用,會誤判狀態,甚至停錯對象。
 launcher_pid() {
   [ -f "$PID_FILE" ] || return 1
   local pid
   pid=$(cat "$PID_FILE" 2>/dev/null)
   [ -n "$pid" ] || return 1
-  ps -p "$pid" -o command= 2>/dev/null | grep -q "start.command" || return 1
+  ps -p "$pid" -o command= 2>/dev/null | grep -q "app-control.sh serve" || return 1
   echo "$pid"
 }
 
@@ -78,8 +79,8 @@ case "${1:-}" in
 
     mkdir -p "$(dirname "$LOG")"
     echo "===== $(date '+%Y-%m-%d %H:%M:%S') 啟動英文課 =====" >> "$LOG"
-    # 瀏覽器由 App 在伺服器準備好之後開啟,所以這裡不讓 start.command 自己開。
-    NO_OPEN=1 nohup ./start.command >> "$LOG" 2>&1 &
+    # 安裝、建置與執行伺服器都交給背景的 serve;瀏覽器由 App 在伺服器準備好之後開啟。
+    nohup "$SELF" serve >> "$LOG" 2>&1 &
     echo $! > "$PID_FILE"
 
     # 看門狗:App 結束(正常結束、當掉、登出都算)就把伺服器停掉。
@@ -91,6 +92,25 @@ case "${1:-}" in
       ) > /dev/null 2>&1 &
     fi
     echo starting
+    ;;
+
+  serve)
+    # 這裡印出的訊息都會進啟動紀錄;啟動失敗時,App 會把最後幾行顯示給使用者看。
+    if ! command -v node >/dev/null 2>&1; then
+      echo "找不到 Node.js。請先到 https://nodejs.org 安裝 Node.js 24 以上的版本,再重新開啟英文課。"
+      exit 1
+    fi
+    if [ ! -d node_modules ]; then
+      echo "第一次啟動,正在安裝需要的套件(需要網路,約一兩分鐘)…"
+      npm install || { echo "套件安裝失敗,請檢查網路連線後再試一次。"; exit 1; }
+    fi
+    # 每次啟動都重新建置,所以更新程式之後不必另外建置網頁。
+    echo "正在準備網頁…"
+    npm run build --silent || { echo "網頁建置失敗,請把上面的錯誤訊息拿給維護的人看。"; exit 1; }
+    npm start --silent
+    status=$?
+    [ "$status" -ne 0 ] && echo "程式意外停止(代碼 ${status})。"
+    exit "$status"
     ;;
 
   state)
@@ -113,11 +133,13 @@ case "${1:-}" in
   stop)
     # 只會停掉這個帳號自己啟動的英文課:別的帳號的行程在這裡看不到,不相干的程式也不會被動到。
     pids=$(server_pids)
-    [ -n "$pids" ] && kill $pids 2>/dev/null
     if launcher=$(launcher_pid); then
-      pkill -P "$launcher" 2>/dev/null
+      # 先停 serve、再停它底下的行程:順序反過來的話,serve 會以為伺服器當掉,在紀錄裡寫「程式意外停止」。
+      children=$(pgrep -P "$launcher")
       kill "$launcher" 2>/dev/null
+      [ -n "$children" ] && kill $children 2>/dev/null
     fi
+    [ -n "$pids" ] && kill $pids 2>/dev/null
     rm -f "$PID_FILE"
     echo "$(date '+%H:%M:%S') 已停止" >> "$LOG" 2>/dev/null
     ;;
@@ -127,7 +149,7 @@ case "${1:-}" in
     ;;
 
   *)
-    echo "用法:$0 launch [行程編號] | state | open | stop | log" >&2
+    echo "用法:$0 launch [行程編號] | serve | state | open | stop | log" >&2
     exit 2
     ;;
 esac

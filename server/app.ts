@@ -77,7 +77,7 @@ export function createApp({ db, ai, staticDir, prepareAhead = false, prepareMinu
       return;
     }
     console.error(err);
-    res.status(500).json({ error: { code: 'internal', message: '伺服器發生未預期的錯誤,請查看終端機的訊息。' } });
+    res.status(500).json({ error: { code: 'internal', message: '伺服器發生未預期的錯誤,請查看啟動紀錄。' } });
   });
 
   return app;

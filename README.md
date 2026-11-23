@@ -4,17 +4,21 @@
 
 所有進度都存在這台電腦上。AI 使用 Google Gemini API 的免費額度。
 
-## 需要準備
-
-- macOS,已安裝 [Node.js](https://nodejs.org) 24 以上。
-- 桌面版 Google Chrome。口說與聽力用的是 Chrome 內建的語音功能。
-- 每位使用者一把 Google API key(見下方)。
-
 ## 第一次設定
 
-1. 在 Finder 對 `start.command` 點兩下。第一次會自動安裝套件,接著用 Chrome 開啟網站。
-2. 按「新增使用者」,輸入名稱、學習階段(國小、國中、高中、大學)與 CEFR 等級。
-3. 到「設定」頁貼上 Google API key,按「測試連線」確認可用。
+需要 macOS、桌面版 Google Chrome(口說與聽力用的是 Chrome 內建的語音功能),以及 [Node.js](https://nodejs.org) 24 以上(用官網的 macOS 安裝檔安裝)。
+
+1. 打開「終端機」,下載程式並產生 App:
+   ```bash
+   git clone https://github.com/tkotwia/english-lesson.git
+   cd english-lesson
+   ./scripts/make-app.sh
+   ```
+2. 資料夾裡會多一個「英文課.app」,點兩下打開它。第一次要安裝套件,約一兩分鐘,好了會自動開啟 Chrome。
+3. 在網頁上按「新增使用者」,輸入名稱、學習階段與 CEFR 等級。
+4. 到「設定」頁貼上 Google API key,按「測試連線」。
+
+之後就不需要終端機了。App 可以拖到 Dock 上。第一次使用 `git` 時,macOS 可能會要求安裝開發者工具,按「安裝」即可。
 
 ### 取得 Google API key
 
@@ -22,54 +26,53 @@
 2. 建立 API key,複製後貼到網站的「設定」頁。
 3. 不要開啟付費。沒有開啟付費時,額度用完只會被拒絕,不會扣款。
 
-免費額度以 Google 專案計算。多位使用者的 key 若來自同一個專案,額度是共用的;要各自獨立,每把 key 必須來自不同的專案。
+每位使用者各貼一把 key。免費額度以 Google 專案計算:多把 key 若來自同一個專案,額度是共用的;要各自獨立,每把 key 必須來自不同的專案。
+
+### 讓這台 Mac 的所有帳號都能用
+
+用管理員帳號,把上面第 1 步換成下面這樣(其餘相同):
+
+```bash
+cd /Users/Shared
+git clone https://github.com/tkotwia/english-lesson.git
+cd english-lesson
+chmod -R +a "group:staff allow read,write,execute,append,delete,delete_child,readattr,writeattr,readextattr,writeextattr,readsecurity,file_inherit,directory_inherit" .
+./scripts/make-app.sh /Applications
+```
+
+App 會出現在每個帳號的「應用程式」裡。所有帳號共用同一份資料:網站裡的使用者清單、進度與 API key 是同一份。訪客帳號不適用。
+
+前一個帳號沒結束 App 就切換到另一個帳號時,另一個帳號點 App 會直接接上已經在執行的那一份。前一個帳號登出後程式會停止,再點一次 App 即可。
+
+## 更新程式
+
+GitHub 上有新版本時:
+
+1. 結束「英文課」App(Cmd+Q)。
+2. 在終端機進到專案資料夾,執行:
+   ```bash
+   git pull
+   npm install
+   ```
+3. 再打開 App。
+
+不用重新產生 App,也不用另外建置:每次啟動都會自動重新建置網頁,舊資料庫也會自動升級,原有的紀錄不會變動。
+
+所有帳號共用的安裝,請用當初安裝的那個帳號更新;其他帳號執行 `git pull` 會被 git 拒絕。
 
 ## 每天怎麼用
 
-1. 點兩下 `start.command`,選擇使用者。
+1. 打開「英文課」App,選擇使用者。
 2. 按「開始上課」,選 20、30 或 40 分鐘。
 3. 上完課看分數與老師的評語。
-4. 要停止程式,關掉 `start.command` 開出來的終端機視窗。
+4. 要停止程式,結束這個 App(Cmd+Q,或在 Dock 的圖示上按右鍵選「結束」)。
 
 右上角隨時可以切換使用者。切換不需要密碼,所以這台電腦上的任何人都能進入任何使用者。
 
-## 做成 App(不用開終端機)
-
-在終端機進到專案資料夾,執行一次:
-
-```bash
-./scripts/make-app.sh
-```
-
-資料夾裡會多一個「英文課.app」。之後點它就會啟動程式並開啟 Chrome,不會出現終端機視窗。
-
-- **停止**:結束這個 App(Cmd+Q,或在 Dock 的圖示上按右鍵選「結束」)。App 開著就是程式在執行,App 關掉程式就停止。
-- **已經開著時再點一次**:只會把網頁再開出來,不會重複啟動。
-- **第一次啟動**要安裝套件,約一兩分鐘,期間會跳出一個說明視窗。
-- **啟動紀錄**在 `~/Library/Logs/english-lesson.log`。原本顯示在終端機的訊息(例如每次呼叫 AI 花了幾秒)都寫在這裡;啟動失敗時 App 也會顯示最後幾行。
-- App 裡記著專案資料夾的位置。**搬動專案資料夾之後要重新執行一次** `./scripts/make-app.sh`。
-- 專案資料夾如果放在「文件」「桌面」或「下載項目」裡,macOS 第一次會詢問是否允許這個 App 取用該資料夾,請按允許。
-- App 用的是系統預設的圖示。`start.command` 仍然可以照常使用。
-
-## 讓這台 Mac 的所有帳號都能用
-
-用管理員帳號做一次:
-
-1. 用 [nodejs.org](https://nodejs.org) 的 macOS 安裝檔(.pkg)安裝 Node.js,這樣每個帳號都找得到。用 nvm 這類工具裝的只有安裝的帳號能用。
-2. 把專案放到共用資料夾,並開放所有帳號讀寫(之後新產生的檔案也自動適用):
-   ```bash
-   mv english-lesson /Users/Shared/english-lesson
-   cd /Users/Shared/english-lesson
-   chmod -R +a "group:staff allow read,write,execute,append,delete,delete_child,readattr,writeattr,readextattr,writeextattr,readsecurity,file_inherit,directory_inherit" .
-   ```
-3. 把 App 產生在「應用程式」裡,每個帳號的 Launchpad 都會看到:
-   ```bash
-   ./scripts/make-app.sh /Applications
-   ```
-
-這樣所有帳號共用同一份資料:網站裡的使用者清單、進度與 API key 是同一份。訪客帳號不屬於 `staff` 群組,不適用。
-
-前一個帳號沒關掉 App 就切換使用者時,下一個帳號點 App 會直接接上已經在執行的那一份;前一個帳號登出後程式會停止,再點一次 App 即可。
+- App 開著就是程式在執行。不小心關掉網頁時,再點一次 App 就會把網頁開回來。
+- 啟動失敗時,App 會顯示原因。完整的啟動紀錄在 `~/Library/Logs/english-lesson.log`。
+- 搬動專案資料夾之後,要重新執行一次 `./scripts/make-app.sh`,因為 App 裡記著資料夾的位置。
+- 專案資料夾如果放在「文件」「桌面」或「下載項目」裡,macOS 第一次會詢問是否允許 App 取用該資料夾,請按允許。
 
 ## 一堂課的內容
 
@@ -137,7 +140,6 @@
 
 - **備份**:先停止程式,再複製整個 `data` 資料夾。
 - **佔用空間**:一堂課連同作答、結果與弱點項目約 40 KB。每天一堂、上一整年約 13 MB。
-- 程式更新後第一次啟動時,會自動替舊資料庫補上新欄位,原有的紀錄不會變動。
 - **搬到另一台電腦**:把 `data` 資料夾放到新電腦上專案的同一個位置。
 - API key 以明碼存在這個檔案裡。把檔案給別人,等於把 key 也給了對方。
 
@@ -208,7 +210,7 @@ AI 產生一堂課需要時間,實測現場產生約 40–80 秒。為了不讓�
 - 關掉 SDK 自己的重試。模型忙線時立刻換備援,而不是在同一個模型上重試好幾次。
 - 記住剛失敗的模型:額度用完的,到下一個額度日之前不再嘗試;忙線或逾時的,先跳過 5 分鐘。
 
-「設定」頁的用量表會顯示每個模型平均每次等多久;啟動程式的終端機視窗裡,每次呼叫也會印出一行,例如 `[ai] lesson gemini-4-hydrogen 40.0 秒`。
+「設定」頁的用量表會顯示每個模型平均每次等多久;啟動紀錄裡,每次呼叫也會有一行,例如 `[ai] lesson gemini-4-hydrogen 40.0 秒`。
 
 ## 隱私與 Google 條款
 
@@ -272,7 +274,7 @@ server/     本機伺服器:資料庫、API、給 AI 的提示
   ai/       AI 層:provider.ts 是介面,gemini.ts 與 mock.ts 是兩個實作
   starters/ 內建的 24 堂起始課(每個等級一個檔案);starters.test.ts 檢查內容是否符合課程規則
 client/     網頁
-scripts/    示範資料與模型比較
+scripts/    產生 App(make-app.sh)與控制啟動停止(app-control.sh)、示範資料、模型比較
 ```
 
 ### 改接其他 AI 供應商或本機模型
