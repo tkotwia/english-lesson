@@ -1,14 +1,19 @@
+import { mkdtempSync, rmSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { CalendarMonth, ProgressSummary, ReviewListItem } from '../shared/api.ts';
+import type { CalendarMonth, ProgressSummary, ReviewListItem, WordList } from '../shared/api.ts';
 import { addDays, localDate, monthOf, monthRange, previousMonth } from '../shared/dates.ts';
 import { FLASHCARD_FORGOT, FLASHCARD_KNOWN, lessonExercises, reviewKey, type Exercise, type ReviewItemView } from '../shared/lesson.ts';
 import { SessionStateSchema, type ExerciseAnswer, type Level, type SessionResult, type SessionState, type SessionView } from '../shared/schema.ts';
+import { lessonSize } from './ai/cefr.ts';
 import { createMockProvider } from './ai/mock.ts';
 import { MOCK_FIXTURES, MOCK_LESSON } from './ai/mockData.ts';
 import { createApp } from './app.ts';
 import { openDb, type Db } from './db.ts';
+import { backfillResponses } from './items.ts';
 
 let db: Db;
 let server: Server;
@@ -60,12 +65,14 @@ function correctResponse(exercise: Exercise): string {
       return FLASHCARD_KNOWN;
     case 'dictation':
     case 'readAloud':
+    case 'rewrite':
       return exercise.sentence;
   }
 }
 
 const right = (exercise: Exercise): ExerciseAnswer => ({ attempts: [correctResponse(exercise)], hintUsed: false });
 const WRONG_TWICE: ExerciseAnswer = { attempts: ['zzz', 'yyy'], hintUsed: false };
+const tried = (...attempts: string[]): ExerciseAnswer => ({ attempts, hintUsed: false });
 
 /** 上完一堂課。overrides 可以覆蓋個別題目的作答;沒覆蓋的題目(含暖身複習)都第一次就答對。 */
 async function takeLesson(userId: number, overrides: Record<string, ExerciseAnswer> = {}): Promise<SessionView> {
@@ -91,9 +98,22 @@ interface ItemRow {
 
 const items = (userId: number) => db.prepare('SELECT * FROM items WHERE user_id = ? ORDER BY id').all(userId) as unknown as ItemRow[];
 const itemByKey = (userId: number, key: string) => items(userId).find((item) => item.item_key === key);
+/** 答錯、不熟或手動標記過的項目(不含第一次就答對、只是排進複習的新單字)。 */
+const missedItems = (userId: number) => items(userId).filter((item) => item.status !== 'learning');
 const makeDue = (itemId: number, date = TODAY) => db.prepare('UPDATE items SET due_date = ? WHERE id = ?').run(date, itemId);
 
-/** 直接在資料庫放一堂已完成的課,用來測試日曆與升級(不必真的上完一個月的課)。 */
+/** 回顧頁列出的本月項目。 */
+async function reviewList(userId: number): Promise<ReviewListItem[]> {
+  const range = monthRange(monthOf(TODAY));
+  return (await call('GET', `/review?userId=${userId}&from=${range.from}&to=${range.to}`)).json.items;
+}
+const wrongAnswersOf = async (userId: number, label: string) => (await reviewList(userId)).find((item) => item.label === label)?.wrongAnswers;
+
+/** 閱讀第一題:兩次都選錯的作答,以及那兩個選項的文字。 */
+const READING_QUESTION = MOCK_LESSON.reading.questions[0]!;
+const WRONG_OPTIONS = READING_QUESTION.options.map((_, index) => index).filter((index) => index !== READING_QUESTION.answerIndex).slice(0, 2);
+
+/** 直接在資料庫放一堂已完成的課,用來測試日曆(不必真的上完一個月的課)。 */
 function insertCompleted(userId: number, date: string, score: number, level: Level = 'A2'): void {
   const result: SessionResult = { score, sections: [], weakPoints: [], writing: null, speaking: null, closing: '' };
   db.prepare(
@@ -113,7 +133,52 @@ describe('弱點項目庫', () => {
     expect(itemByKey(userId, 'vocab:crowded')).toMatchObject({ kind: 'vocab', status: 'unknown', wrong_count: 1, interval_days: 1, due_date: TOMORROW });
     const grammar = items(userId).find((item) => item.kind === 'grammar');
     expect(grammar).toMatchObject({ status: 'unfamiliar', wrong_count: 1, due_date: TOMORROW });
-    expect(items(userId)).toHaveLength(2);
+    expect(missedItems(userId)).toHaveLength(2);
+  });
+
+  // 剛看完單字表就答對只代表短期記憶。以前這些字學過就不再出現,現在每個新單字都要隔天複習。
+  it('第一次就答對的新單字也進入項目庫:記為新學、不算答錯、明天到期', async () => {
+    const userId = await newUser();
+    await takeLesson(userId, { 'vocab.0': WRONG_TWICE });
+
+    const learned = items(userId).filter((item) => item.status === 'learning');
+    expect(learned.map((item) => item.item_key)).toEqual(MOCK_LESSON.vocab.slice(1).map((vocab) => `vocab:${vocab.word.toLowerCase()}`));
+    expect(learned.every((item) => item.kind === 'vocab' && item.wrong_count === 0 && item.interval_days === 1 && item.due_date === TOMORROW)).toBe(true);
+    // 只有單字:答對的文法題、閱讀題不會進項目庫。
+    expect(items(userId).filter((item) => item.kind !== 'vocab')).toHaveLength(0);
+  });
+
+  it('新學的單字不是「不熟的部分」:不列在回顧裡', async () => {
+    const userId = await newUser();
+    await takeLesson(userId);
+    expect(items(userId).length).toBeGreaterThan(0);
+    expect(await reviewList(userId)).toEqual([]);
+  });
+
+  // 重上是同一份課文;已經在複習中的字不能因此被重設回第一天,也不能多出一筆。
+  it('重上同一堂課不會重設或重複建立已經在複習中的單字', async () => {
+    const userId = await newUser();
+    const first = await takeLesson(userId);
+    const word = itemByKey(userId, 'vocab:delicious')!;
+    db.prepare(`UPDATE items SET interval_days = 16, due_date = ? WHERE id = ?`).run(addDays(TODAY, 9), word.id);
+    const before = items(userId).length;
+
+    const retake: SessionView = (await call('POST', `/sessions/${first.id}/retake`)).json;
+    const answers: Record<string, ExerciseAnswer> = {};
+    for (const { key, exercise } of lessonExercises(retake.lesson)) answers[key] = right(exercise);
+    for (const item of retake.review) answers[reviewKey(item.id)] = right(item.quiz);
+    await call('POST', `/sessions/${retake.id}/complete`, { state: { ...SessionStateSchema.parse({}), answers } });
+
+    expect(items(userId)).toHaveLength(before);
+    expect(itemByKey(userId, 'vocab:delicious')).toMatchObject({ status: 'learning', interval_days: 16, due_date: addDays(TODAY, 9) });
+  });
+
+  // 以前錯過的字,這次在課堂上答對了(剛看過單字表),不能因此把它當成新學的字、洗掉錯過的紀錄。
+  it('以前錯過的單字再出現且答對,維持原本的複習進度', async () => {
+    const userId = await newUser();
+    await takeLesson(userId, { 'vocab.0': WRONG_TWICE });
+    await takeLesson(userId);
+    expect(itemByKey(userId, 'vocab:crowded')).toMatchObject({ status: 'unknown', wrong_count: 1, interval_days: 1 });
   });
 
   // 同一個單字在不同課堂再錯,應該看得出「錯了幾次」,而不是變成兩筆互不相干的紀錄。
@@ -127,7 +192,8 @@ describe('弱點項目庫', () => {
     expect(crowded[0]!.wrong_count).toBe(2);
   });
 
-  it('AI 批改找到的寫作錯誤做成閃卡進入項目庫', async () => {
+  // 只看老師改好的句子很快就忘。複習時要自己把正確的句子打出來,由程式判斷對不對。
+  it('AI 批改找到的寫作錯誤做成訂正題進入項目庫', async () => {
     const userId = await newUser();
     const session: SessionView = (await call('POST', '/sessions', { userId, minutes: 30 })).json;
     const answers = Object.fromEntries(lessonExercises(session.lesson).map(({ key, exercise }) => [key, right(exercise)]));
@@ -138,14 +204,51 @@ describe('弱點項目庫', () => {
     const writing = items(userId).find((item) => item.kind === 'writing')!;
     makeDue(writing.id);
     const [item] = (await call('GET', `/review/due?userId=${userId}`)).json.items as ReviewItemView[];
-    expect(item!.quiz).toMatchObject({ type: 'flashcard', front: 'I go to the park yesterday.', back: 'I went to the park yesterday.' });
+    expect(item!.quiz).toMatchObject({ type: 'rewrite', original: 'I go to the park yesterday.', sentence: 'I went to the park yesterday.' });
+  });
+
+  it('訂正題要打出正確的句子才算記得;照抄原本錯的句子不算', async () => {
+    const userId = await newUser();
+    const session: SessionView = (await call('POST', '/sessions', { userId, minutes: 30 })).json;
+    const answers = Object.fromEntries(lessonExercises(session.lesson).map(({ key, exercise }) => [key, right(exercise)]));
+    await call('POST', `/sessions/${session.id}/complete`, { state: { ...SessionStateSchema.parse({}), answers, writing: 'I go to the park yesterday.' } });
+    const writing = items(userId).find((item) => item.kind === 'writing')!;
+    makeDue(writing.id);
+
+    const same = await call('POST', '/review/results', { userId, answers: { [writing.id]: tried('I go to the park yesterday.', 'I go to the park yesterday.') } });
+    expect(same.json.results[0].outcome).not.toBe('correct');
+    makeDue(writing.id);
+    const fixed = await call('POST', '/review/results', { userId, answers: { [writing.id]: tried('i went to the park yesterday') } });
+    expect(fixed.json.results[0].outcome).toBe('correct');
+  });
+
+  // 較早的版本把這類錯誤存成閃卡,由學生自己判斷記不記得。舊項目不能因此停在自評,也不必重建資料。
+  it('舊版存成閃卡的寫作與對話錯誤,複習時也改成訂正題;生字閃卡維持閃卡', async () => {
+    const userId = await newUser();
+    const session: SessionView = (await call('POST', '/sessions', { userId, minutes: 30 })).json;
+    await call('POST', `/sessions/${session.id}/flags`, { target: 'glossary.0' });
+    const insert = db.prepare(
+      `INSERT INTO items (user_id, kind, item_key, content_json, status, due_date, first_seen, last_seen) VALUES (?, 'writing', 'writing:old', ?, 'unfamiliar', ?, ?, ?)`,
+    );
+    const old = { label: 'She go home.', answer: 'She goes home.', explanation: '第三人稱單數', context: null, quiz: { type: 'flashcard', front: 'She go home.', back: 'She goes home.', explanation: '第三人稱單數' } };
+    insert.run(userId, JSON.stringify(old), TODAY, TODAY, TODAY);
+    makeDue(itemByKey(userId, 'vocab:noisy')!.id);
+
+    const due: ReviewItemView[] = (await call('GET', `/review/due?userId=${userId}`)).json.items;
+    expect(due.find((item) => item.kind === 'writing')!.quiz).toEqual({ type: 'rewrite', original: 'She go home.', sentence: 'She goes home.', explanation: '第三人稱單數' });
+    expect(due.find((item) => item.kind === 'vocab')!.quiz.type).toBe('flashcard');
+
+    const writing = itemByKey(userId, 'writing:old')!;
+    // 以前按「我記得」就過關;現在要真的打出正確的句子。
+    const selfRated = await call('POST', '/review/results', { userId, answers: { [writing.id]: tried(FLASHCARD_KNOWN) } });
+    expect(selfRated.json.results[0].outcome).not.toBe('correct');
   });
 
   it('每位使用者的項目庫互不相干', async () => {
     const a = await newUser('小明');
     const b = await newUser('小華');
     await takeLesson(a, { 'vocab.0': WRONG_TWICE });
-    expect(items(a)).toHaveLength(1);
+    expect(missedItems(a)).toHaveLength(1);
     expect(items(b)).toHaveLength(0);
   });
 });
@@ -190,11 +293,29 @@ describe('暖身複習(間隔重複)', () => {
     expect(itemByKey(userId, 'vocab:crowded')).toMatchObject({ status: 'unknown', interval_days: 1, due_date: TOMORROW, wrong_count: 2 });
   });
 
-  it('間隔已達 16 天又答對,標為已掌握,之後不再出現', async () => {
+  // 每個新單字之後至少要複習 4 次。上限低於「每堂新單字數 × 4」的話,每天上課,到期的複習會越積越多。
+  it('一堂課的暖身複習容納得下每天新單字帶來的複習量;超過上限的留到之後', async () => {
+    const userId = await newUser();
+    const insert = db.prepare(
+      `INSERT INTO items (user_id, kind, item_key, content_json, status, due_date, first_seen, last_seen) VALUES (?, 'vocab', ?, ?, 'learning', ?, ?, ?)`,
+    );
+    for (let i = 0; i < 50; i++) {
+      const quiz = { type: 'cloze', sentence: 'It is ___.', answers: [`word${i}`], hint: '', explanation: '' };
+      insert.run(userId, `vocab:word${i}`, JSON.stringify({ label: `word${i}`, answer: 'x', explanation: '', context: null, quiz }), TODAY, TODAY, TODAY);
+    }
+    for (const minutes of [20, 30, 40] as const) {
+      const session: SessionView = (await call('POST', '/sessions', { userId, minutes })).json;
+      expect(session.review.length, `${minutes} 分鐘`).toBe(Math.min(50, 4 * lessonSize('A2', minutes).vocab));
+      await call('DELETE', `/sessions/${session.id}`);
+    }
+    expect(((await call('GET', `/progress?userId=${userId}`)).json as ProgressSummary).dueCount).toBe(50);
+  });
+
+  it('間隔已達 64 天又答對,標為已掌握,之後不再出現', async () => {
     const userId = await newUser();
     await takeLesson(userId, { 'vocab.0': WRONG_TWICE });
     const item = itemByKey(userId, 'vocab:crowded')!;
-    db.prepare(`UPDATE items SET interval_days = 16, status = 'unfamiliar', due_date = ? WHERE id = ?`).run(TODAY, item.id);
+    db.prepare(`UPDATE items SET interval_days = 64, status = 'unfamiliar', due_date = ? WHERE id = ?`).run(TODAY, item.id);
     await takeLesson(userId);
 
     expect(itemByKey(userId, 'vocab:crowded')!.status).toBe('mastered');
@@ -345,6 +466,137 @@ describe('回顧:整週或整月不熟的部分', () => {
   });
 });
 
+// 只列正確答案的話,學生不知道自己當時錯在哪裡,回顧就少了一半的用處。
+describe('回顧:學生當時答錯的內容', () => {
+  it('列出上課時答錯的作答', async () => {
+    const userId = await newUser();
+    await takeLesson(userId, { 'vocab.0': tried('crowd', 'crowding') });
+    expect(await wrongAnswersOf(userId, 'crowded')).toEqual(['crowd', 'crowding']);
+  });
+
+  it('第二次才答對的,只列答錯的那一次', async () => {
+    const userId = await newUser();
+    await takeLesson(userId, { 'vocab.0': tried('crowd', 'crowded') });
+    expect(await wrongAnswersOf(userId, 'crowded')).toEqual(['crowd']);
+  });
+
+  // 作答紀錄存的是第幾個選項,直接顯示的話學生看不懂。
+  it('選擇題列出學生選的選項文字', async () => {
+    const userId = await newUser();
+    await takeLesson(userId, { 'reading.0': tried(...WRONG_OPTIONS.map(String)) });
+    expect(await wrongAnswersOf(userId, READING_QUESTION.prompt)).toEqual(WRONG_OPTIONS.map((index) => READING_QUESTION.options[index]));
+  });
+
+  it('之後複習又答錯:改成顯示最近這一次的作答', async () => {
+    const userId = await newUser();
+    await takeLesson(userId, { 'vocab.0': tried('crowd', 'crowding') });
+    const item = itemByKey(userId, 'vocab:crowded')!;
+    await call('POST', '/review/results', { userId, answers: { [item.id]: tried('nope', 'still nope') } });
+    expect(await wrongAnswersOf(userId, 'crowded')).toEqual(['nope', 'still nope']);
+  });
+
+  // 答對不代表之前的錯誤不值得看:項目還列在回顧裡,就要看得到當時錯在哪裡。
+  it('之後複習答對了:仍然看得到先前答錯的作答', async () => {
+    const userId = await newUser();
+    await takeLesson(userId, { 'vocab.0': tried('crowd', 'crowding') });
+    const item = itemByKey(userId, 'vocab:crowded')!;
+    await call('POST', '/review/results', { userId, answers: { [item.id]: tried('crowded') } });
+    expect(await wrongAnswersOf(userId, 'crowded')).toEqual(['crowd', 'crowding']);
+  });
+
+  it('手動標記「我不熟」的項目沒有答錯的作答', async () => {
+    const userId = await newUser();
+    const session: SessionView = (await call('POST', '/sessions', { userId, minutes: 30 })).json;
+    await call('POST', `/sessions/${session.id}/flags`, { target: 'vocab.1' });
+    expect(await wrongAnswersOf(userId, 'delicious')).toEqual([]);
+  });
+});
+
+// 更新之前犯的錯,作答還留在當時的上課紀錄裡。不補的話,回顧頁上舊的項目永遠看不到當時答了什麼。
+describe('舊版留下的紀錄:補上當時答錯的內容', () => {
+  /** 模擬舊版:當時沒有記下作答。 */
+  const forget = () => db.exec('UPDATE item_events SET responses_json = NULL');
+  /** 上課時留下、還沒補過的紀錄有幾筆。 */
+  const pendingEvents = () =>
+    (db.prepare('SELECT COUNT(*) AS n FROM item_events WHERE responses_json IS NULL AND session_id IS NOT NULL').get() as { n: number }).n;
+
+  it('從上課紀錄找回課程題目的作答', async () => {
+    const userId = await newUser();
+    await takeLesson(userId, { 'vocab.0': tried('crowd', 'crowding'), 'reading.0': tried(...WRONG_OPTIONS.map(String)) });
+    forget();
+    expect(await wrongAnswersOf(userId, 'crowded')).toEqual([]);
+
+    const pending = pendingEvents();
+    expect(pending).toBeGreaterThan(0);
+    expect(backfillResponses(db)).toBe(pending);
+    expect(pendingEvents()).toBe(0);
+    expect(await wrongAnswersOf(userId, 'crowded')).toEqual(['crowd', 'crowding']);
+    expect(await wrongAnswersOf(userId, READING_QUESTION.prompt)).toEqual(WRONG_OPTIONS.map((index) => READING_QUESTION.options[index]));
+  });
+
+  // 第二堂課裡「crowded」出現兩次:課程的單字題(答對)與暖身複習(答錯)。要找回的是答錯的那一題。
+  it('暖身複習時答錯的也找得回來,不會和同一堂課裡答對的題目弄混', async () => {
+    const userId = await newUser();
+    await takeLesson(userId, { 'vocab.0': tried('crowd', 'crowding') });
+    const item = itemByKey(userId, 'vocab:crowded')!;
+    makeDue(item.id);
+    await takeLesson(userId, { [reviewKey(item.id)]: tried('nope', 'still nope') });
+    forget();
+
+    backfillResponses(db);
+    expect(await wrongAnswersOf(userId, 'crowded')).toEqual(['nope', 'still nope']);
+  });
+
+  // 每次啟動都會執行;補過的不能再算一次,也不能蓋掉之後新記下的作答。
+  it('只補還沒補過的紀錄', async () => {
+    const userId = await newUser();
+    await takeLesson(userId, { 'vocab.0': tried('crowd', 'crowding') });
+    expect(backfillResponses(db)).toBe(0);
+    forget();
+    expect(backfillResponses(db)).toBeGreaterThan(0);
+    expect(backfillResponses(db)).toBe(0);
+  });
+
+  it('手動標記沒有作答可找;單獨複習練習的紀錄當時沒有存,維持原狀', async () => {
+    const userId = await newUser();
+    const session: SessionView = (await call('POST', '/sessions', { userId, minutes: 30 })).json;
+    await call('POST', `/sessions/${session.id}/flags`, { target: 'vocab.1' });
+    const flagged = itemByKey(userId, 'vocab:delicious')!;
+    await call('POST', '/review/results', { userId, answers: { [flagged.id]: tried('nope', 'still nope') } });
+    forget();
+
+    expect(backfillResponses(db)).toBe(1);
+    const events = db.prepare('SELECT session_id, responses_json FROM item_events ORDER BY id').all() as unknown as { session_id: number | null; responses_json: string | null }[];
+    expect(events).toEqual([
+      { session_id: session.id, responses_json: '[]' },
+      { session_id: null, responses_json: null },
+    ]);
+  });
+
+  it('舊資料庫沒有這個欄位:開啟時補上,原有的紀錄不變', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'english-lesson-test-'));
+    const path = join(dir, 'english.db');
+    try {
+      const old = openDb(path);
+      old.exec(`INSERT INTO users (name, stage, level) VALUES ('小明', 'junior', 'A2')`);
+      old.exec(`INSERT INTO items (user_id, kind, item_key, content_json, status, due_date, first_seen, last_seen)
+                VALUES (1, 'vocab', 'vocab:crowded', '{}', 'unknown', '2026-11-02', '2026-11-01', '2026-11-01')`);
+      old.exec(`INSERT INTO item_events (item_id, date, result) VALUES (1, '2026-11-01', 'unknown')`);
+      old.exec('ALTER TABLE item_events DROP COLUMN responses_json');
+      old.close();
+
+      const upgraded = openDb(path);
+      expect(upgraded.prepare('SELECT item_id, date, result, responses_json FROM item_events').all()).toEqual([
+        { item_id: 1, date: '2026-11-01', result: 'unknown', responses_json: null },
+      ]);
+      expect(backfillResponses(upgraded)).toBe(0);
+      upgraded.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('日曆', () => {
   it('每天顯示當日分數(當天課程的平均),月分數是每日分數的平均', async () => {
     const userId = await newUser();
@@ -373,55 +625,12 @@ describe('日曆', () => {
     insertCompleted(a, `${LAST_MONTH}-05`, 90);
     expect((await call('GET', `/calendar?userId=${b}&month=${LAST_MONTH}`)).json.days).toEqual([]);
   });
-});
-
-describe('升級建議', () => {
-  const progress = async (userId: number): Promise<ProgressSummary> => (await call('GET', `/progress?userId=${userId}`)).json;
-
-  it('上個月平均達 95 分時出現升級建議', async () => {
-    const userId = await newUser();
-    insertCompleted(userId, `${LAST_MONTH}-10`, 96);
-    expect((await progress(userId)).suggestion).toEqual({ month: LAST_MONTH, average: 96, from: 'A2', to: 'B1' });
-  });
-
-  it('上個月平均不到 95 分時沒有建議', async () => {
-    const userId = await newUser();
-    insertCompleted(userId, `${LAST_MONTH}-10`, 94.9);
-    expect((await progress(userId)).suggestion).toBeNull();
-  });
-
-  it('接受建議後等級升一級,而且不再出現同一個建議', async () => {
-    const userId = await newUser();
-    insertCompleted(userId, `${LAST_MONTH}-10`, 96);
-    const res = await call('POST', '/level-decisions', { userId, month: LAST_MONTH, decision: 'accepted' });
-
-    expect(res.json.level).toBe('B1');
-    expect((await progress(userId)).suggestion).toBeNull();
-  });
-
-  it('選「先不要」時等級不變,這個月份也不再詢問', async () => {
-    const userId = await newUser();
-    insertCompleted(userId, `${LAST_MONTH}-10`, 96);
-    const res = await call('POST', '/level-decisions', { userId, month: LAST_MONTH, decision: 'declined' });
-
-    expect(res.json.level).toBe('A2');
-    expect((await progress(userId)).suggestion).toBeNull();
-  });
-
-  // 防止沒有達標卻直接呼叫 API 升級。
-  it('沒有升級建議時,不能送出升級決定', async () => {
-    const userId = await newUser();
-    insertCompleted(userId, `${LAST_MONTH}-10`, 80);
-    const res = await call('POST', '/level-decisions', { userId, month: LAST_MONTH, decision: 'accepted' });
-    expect(res.status).toBe(409);
-    expect((await call('GET', '/users')).json[0].level).toBe('A2');
-  });
 
   it('首頁摘要包含今天的分數、本月平均與待複習數量', async () => {
     const userId = await newUser();
     await takeLesson(userId, { 'vocab.0': WRONG_TWICE });
     makeDue(itemByKey(userId, 'vocab:crowded')!.id);
-    const summary = await progress(userId);
+    const summary: ProgressSummary = (await call('GET', `/progress?userId=${userId}`)).json;
 
     expect(summary.today).toBe(TODAY);
     expect(summary.todayScore).not.toBeNull();
@@ -431,16 +640,137 @@ describe('升級建議', () => {
 });
 
 describe('刪除使用者', () => {
-  it('一併刪除他的課程、弱點項目、複習紀錄與升級決定', async () => {
+  it('一併刪除他的課程、弱點項目、複習紀錄與用量紀錄', async () => {
     const userId = await newUser();
     insertCompleted(userId, `${LAST_MONTH}-10`, 96);
-    await call('POST', '/level-decisions', { userId, month: LAST_MONTH, decision: 'declined' });
     await takeLesson(userId, { 'vocab.0': WRONG_TWICE });
     await call('DELETE', `/users/${userId}`);
 
-    for (const table of ['sessions', 'items', 'item_events', 'level_decisions', 'api_usage']) {
+    for (const table of ['sessions', 'items', 'item_events', 'api_usage']) {
       const row = db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number };
       expect(row.n, table).toBe(0);
     }
+  });
+});
+
+// 流暢度練習用的是學生已經熟悉的內容:上一堂上完的課文。
+describe('課前重溫上一課', () => {
+  const retitle = (sessionId: number, title: string) => db.prepare(`UPDATE sessions SET lesson_json = json_set(lesson_json, '$.title', ?) WHERE id = ?`).run(title, sessionId);
+  const start = async (userId: number): Promise<SessionView> => (await call('POST', '/sessions', { userId, minutes: 30 })).json;
+
+  it('第一堂課沒有上一課可以重溫', async () => {
+    const userId = await newUser();
+    expect((await start(userId)).previous).toBeNull();
+  });
+
+  it('之後的課重溫最近一堂上完的課文', async () => {
+    const userId = await newUser();
+    const first = await takeLesson(userId);
+    retitle(first.id, 'First lesson');
+    const second = await takeLesson(userId);
+    retitle(second.id, 'Second lesson');
+
+    const third = await start(userId);
+    expect(third.previous).toMatchObject({ title: 'Second lesson', text: MOCK_LESSON.passage.text });
+  });
+
+  // 重上用的是同一份課文。拿它自己來「重溫」,等於在聽力之前就先把今天的課文看完了。
+  it('重上的課不會拿原本那一堂的課文來重溫', async () => {
+    const userId = await newUser();
+    const first = await takeLesson(userId);
+    retitle(first.id, 'First lesson');
+    const second = await takeLesson(userId);
+    retitle(second.id, 'Second lesson');
+
+    const retake: SessionView = (await call('POST', `/sessions/${second.id}/retake`)).json;
+    expect(retake.previous!.title).toBe('First lesson');
+  });
+
+  // 別人的課文不是這位學生熟悉的內容。
+  it('只用自己上過的課', async () => {
+    const other = await newUser('小華');
+    await takeLesson(other);
+    const userId = await newUser('小明');
+    expect((await start(userId)).previous).toBeNull();
+  });
+
+  // 流暢度練習的重點是和自己比、越來越快,所以要知道上次的成績。某一堂跳過了,就往前找最近一次有紀錄的。
+  it('附上最近一次有紀錄的成績;中間跳過的課不會把它洗掉', async () => {
+    const userId = await newUser();
+    const first = await start(userId);
+    const answers = Object.fromEntries(lessonExercises(first.lesson).map(({ key, exercise }) => [key, right(exercise)]));
+    const state: SessionState = { ...SessionStateSchema.parse({}), answers, fluency: { readingWpm: 150, retellWords: 42 } };
+    await call('POST', `/sessions/${first.id}/complete`, { state });
+    expect((await call('GET', `/sessions/${first.id}`)).json.state.fluency).toEqual({ readingWpm: 150, retellWords: 42 });
+
+    await takeLesson(userId); // 這一堂跳過了重溫
+    const third = await start(userId);
+    expect(third.previous).toMatchObject({ lastReadingWpm: 150, lastRetellWords: 42 });
+  });
+});
+
+// 單字表:讓學生回頭看這個等級學過哪些字,以及哪些是當初就沒學好的。
+describe('單字表', () => {
+  const words = async (userId: number, level?: string): Promise<WordList> =>
+    (await call('GET', `/words?userId=${userId}${level ? `&level=${level}` : ''}`)).json;
+  const entry = (list: WordList, word: string) => list.words.find((item) => item.word === word)!;
+
+  it('列出這個等級上過的重點單字,並標出當初答錯或不熟的,連同當時填的內容', async () => {
+    const userId = await newUser();
+    const lesson = await takeLesson(userId, { 'vocab.0': tried('crowd', 'crowding'), 'vocab.1': tried('tasty', 'delicious') });
+    const list = await words(userId);
+
+    expect(list.level).toBe('A2');
+    expect(list.words.map((item) => item.word)).toEqual(MOCK_LESSON.vocab.map((vocab) => vocab.word));
+    expect(entry(list, 'crowded')).toMatchObject({ outcome: 'unknown', wrongAnswers: ['crowd', 'crowding'], status: 'unknown', sessionId: lesson.id, date: TODAY });
+    expect(entry(list, 'delicious')).toMatchObject({ outcome: 'unfamiliar', wrongAnswers: ['tasty'], status: 'unfamiliar' });
+    const fine = list.words.filter((item) => item.word !== 'crowded' && item.word !== 'delicious');
+    expect(fine.every((item) => item.outcome === 'correct' && item.wrongAnswers.length === 0 && item.status === 'learning')).toBe(true);
+    expect(entry(list, 'crowded')).toMatchObject({ meaning: MOCK_LESSON.vocab[0]!.meaning, example: MOCK_LESSON.vocab[0]!.example, lessonTitle: MOCK_LESSON.title });
+  });
+
+  // 重上用的是同一份題目,第二次當然會對。那不代表當初就會,標記不能因此消失;同一個字也不該列兩次。
+  it('重上時答對,不會把「當初答錯」的標記洗掉,也不會重複列出', async () => {
+    const userId = await newUser();
+    const original = await takeLesson(userId, { 'vocab.0': tried('crowd', 'crowding') });
+    const retake: SessionView = (await call('POST', `/sessions/${original.id}/retake`)).json;
+    const answers = Object.fromEntries(lessonExercises(retake.lesson).map(({ key, exercise }) => [key, right(exercise)]));
+    for (const item of retake.review) answers[reviewKey(item.id)] = right(item.quiz);
+    await call('POST', `/sessions/${retake.id}/complete`, { state: { ...SessionStateSchema.parse({}), answers } });
+
+    const list = await words(userId);
+    expect(list.words).toHaveLength(MOCK_LESSON.vocab.length);
+    expect(entry(list, 'crowded')).toMatchObject({ outcome: 'unknown', wrongAnswers: ['crowd', 'crowding'], sessionId: original.id });
+  });
+
+  it('只列出指定等級的單字;沒有指定時用目前的等級', async () => {
+    const userId = await newUser();
+    await takeLesson(userId);
+    expect((await words(userId, 'B1')).words).toEqual([]);
+    expect((await words(userId, 'A2')).words).toHaveLength(MOCK_LESSON.vocab.length);
+
+    await call('PATCH', `/users/${userId}`, { level: 'B1' });
+    expect(await words(userId)).toMatchObject({ level: 'B1', words: [] });
+  });
+
+  it('還沒上完的課不列入;課後手動標過「我不熟」的會註明', async () => {
+    const userId = await newUser();
+    const session: SessionView = (await call('POST', '/sessions', { userId, minutes: 30 })).json;
+    expect((await words(userId)).words).toEqual([]);
+
+    const answers = Object.fromEntries(lessonExercises(session.lesson).map(({ key, exercise }) => [key, right(exercise)]));
+    await call('POST', `/sessions/${session.id}/complete`, { state: { ...SessionStateSchema.parse({}), answers } });
+    await call('POST', `/sessions/${session.id}/flags`, { target: 'vocab.2' });
+    const list = await words(userId);
+    expect(list.words[2]).toMatchObject({ outcome: 'correct', flagged: true, status: 'unfamiliar' });
+    expect(list.words[3]).toMatchObject({ flagged: false });
+  });
+
+  it('只看得到自己的單字;等級不正確會被拒絕', async () => {
+    const other = await newUser('小華');
+    await takeLesson(other);
+    const userId = await newUser('小明');
+    expect((await words(userId)).words).toEqual([]);
+    expect((await call('GET', `/words?userId=${userId}&level=Z9`)).status).toBe(400);
   });
 });

@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path';
 import { createProvider, geminiOptionsFromEnv } from './ai/index.ts';
 import { createApp } from './app.ts';
 import { openDb } from './db.ts';
+import { backfillResponses } from './items.ts';
 import { LESSON_MINUTES } from '../shared/schema.ts';
 
 if (existsSync('.env')) process.loadEnvFile('.env');
@@ -19,6 +20,8 @@ const chosenMinutes = LESSON_MINUTES.filter((minutes) => requestedMinutes.includ
 const prepareMinutes = chosenMinutes.length > 0 ? chosenMinutes : LESSON_MINUTES;
 
 const db = openDb(dbPath);
+const backfilled = backfillResponses(db);
+if (backfilled > 0) console.log(`[server] 已從上課紀錄補回舊紀錄裡答錯的作答(檢查了 ${backfilled} 筆)`);
 const ai = createProvider(process.env);
 const app = createApp({
   db,

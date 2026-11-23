@@ -1,18 +1,19 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router';
-import type { CalendarDay, CalendarMonth, ProgressSummary } from '../../../shared/api.ts';
+import type { CalendarDay, CalendarMonth } from '../../../shared/api.ts';
 import { addDays, addMonths, localDate, monthOf, monthRange, weekday } from '../../../shared/dates.ts';
-import { LEVEL_UP_THRESHOLD } from '../../../shared/levelup.ts';
 import { SECTION_LABELS } from '../../../shared/schema.ts';
 import { api, errorMessage } from '../api.ts';
-import { LevelUpBanner } from '../components/LevelUpBanner.tsx';
 import { useActiveUser } from '../userContext.tsx';
 
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
 
+/** 月曆上用最深的顏色標示的分數。 */
+const TOP_SCORE = 95;
+
 /** 分數對應的顏色等級,用在月曆格子上。 */
 export function scoreTone(score: number): string {
-  if (score >= LEVEL_UP_THRESHOLD) return 'tone-top';
+  if (score >= TOP_SCORE) return 'tone-top';
   if (score >= 80) return 'tone-good';
   if (score >= 60) return 'tone-fair';
   return 'tone-low';
@@ -31,15 +32,12 @@ export function Calendar() {
   const today = localDate();
   const [month, setMonth] = useState(monthOf(today));
   const [data, setData] = useState<CalendarMonth | null>(null);
-  const [progress, setProgress] = useState<ProgressSummary | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [calendar, summary] = await Promise.all([api.getCalendar(user.id, month), api.getProgress(user.id)]);
-      setData(calendar);
-      setProgress(summary);
+      setData(await api.getCalendar(user.id, month));
       setError(null);
     } catch (err) {
       setError(errorMessage(err));
@@ -59,7 +57,6 @@ export function Calendar() {
     <section className="page">
       <h1>學習日曆</h1>
       {error && <p className="alert alert-error">{error}</p>}
-      {progress?.suggestion && <LevelUpBanner suggestion={progress.suggestion} onDecided={load} />}
 
       <div className="card">
         <div className="calendar-head">
@@ -82,7 +79,7 @@ export function Calendar() {
             <>
               <strong className={scoreTone(data.average)}> {data.average} 分</strong>
               <span className="muted">
-                (上課 {data.days.length} 天。整個月平均達 {LEVEL_UP_THRESHOLD} 分,下個月會建議升級)
+                (上課 {data.days.length} 天)
               </span>
             </>
           )}

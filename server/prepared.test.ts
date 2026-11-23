@@ -456,11 +456,11 @@ describe('等待時間的預估:需要等的時候,畫面用它顯示進度條�
   it('預估秒數跟著實際花費的時間調整,新的紀錄比重較高但不會完全蓋過舊的', async () => {
     const userId = await newUser();
     recordTaskTiming(db, 'lesson', 20_000);
-    expect(taskTimings(db)).toEqual({ lesson: 20, grade: 30 });
+    expect(taskTimings(db)).toMatchObject({ lesson: 20, grade: 30 });
     recordTaskTiming(db, 'lesson', 40_000);
     expect(taskTimings(db).lesson).toBe(26); // 20 × 0.7 + 40 × 0.3
 
-    expect((await call('GET', '/sessions/timings')).json).toEqual({ lesson: 26, grade: 30 });
+    expect((await call('GET', '/sessions/timings')).json).toMatchObject({ lesson: 26, grade: 30 });
     expect((await status(userId)).lengths.map((length) => length.waitSeconds)).toEqual([0, 26, 26]);
   });
 

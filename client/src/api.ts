@@ -1,9 +1,21 @@
-import type { CalendarMonth, PreparedStatus, ProgressSummary, ReviewListItem, TaskTimings } from '../../shared/api.ts';
+import type {
+  CalendarMonth,
+  PlacementAttempt,
+  PlacementResult,
+  PlacementStatus,
+  PreparedStatus,
+  ProgressSummary,
+  ReviewListItem,
+  TaskTimings,
+  WordList,
+} from '../../shared/api.ts';
+import type { PlacementAnswers } from '../../shared/placement.ts';
 import type { ReviewItemView } from '../../shared/lesson.ts';
 import type {
   ChatTurn,
   ExerciseAnswer,
   KeyTestResult,
+  Level,
   Minutes,
   NewUser,
   Outcome,
@@ -77,12 +89,15 @@ export const api = {
 
   getProgress: (userId: number) => request<ProgressSummary>('GET', `/progress?userId=${userId}`),
   getCalendar: (userId: number, month: string) => request<CalendarMonth>('GET', `/calendar?userId=${userId}&month=${month}`),
-  decideLevel: (userId: number, month: string, decision: 'accepted' | 'declined') =>
-    request<PublicUser>('POST', '/level-decisions', { userId, month, decision }),
 
   getReview: (userId: number, from: string, to: string) =>
     request<{ items: ReviewListItem[] }>('GET', `/review?userId=${userId}&from=${from}&to=${to}`),
   getDueItems: (userId: number) => request<{ items: ReviewItemView[] }>('GET', `/review/due?userId=${userId}`),
+
+  getWords: (userId: number, level: Level) => request<WordList>('GET', `/words?userId=${userId}&level=${level}`),
+  getPlacement: (userId: number) => request<PlacementStatus>('GET', `/placement?userId=${userId}`),
+  startPlacement: (userId: number) => request<PlacementAttempt>('POST', '/placement', { userId }),
+  completePlacement: (id: number, answers: PlacementAnswers, tts: boolean) => request<PlacementResult>('POST', `/placement/${id}/complete`, { answers, tts }),
   postReviewResults: (userId: number, answers: Record<string, ExerciseAnswer>) =>
     request<{ results: { itemId: number; outcome: Outcome }[] }>('POST', '/review/results', { userId, answers }),
 };

@@ -1,12 +1,12 @@
 import express from 'express';
-import { LevelDecisionSchema, type CalendarDay, type CalendarMonth, type CalendarSession, type ProgressSummary } from '../../shared/api.ts';
-import { isValidMonth, localDate, monthOf, monthRange, previousMonth } from '../../shared/dates.ts';
-import { dailyScores, levelUpSuggestion, monthlyAverage, type LevelUpSuggestion, type ScoredSession } from '../../shared/levelup.ts';
+import type { CalendarDay, CalendarMonth, CalendarSession, ProgressSummary } from '../../shared/api.ts';
+import { isValidMonth, localDate, monthOf, monthRange } from '../../shared/dates.ts';
+import { dailyScores, monthlyAverage, type ScoredSession } from '../../shared/scores.ts';
 import type { Lesson, Level, RetakeSummary, SessionResult } from '../../shared/schema.ts';
-import { transaction, type Db } from '../db.ts';
+import type { Db } from '../db.ts';
 import { HttpError } from '../errors.ts';
 import { dueCount } from '../items.ts';
-import { getUserRow, parseId, toPublicUser } from './users.ts';
+import { getUserRow, parseId } from './users.ts';
 
 interface CompletedRow {
   id: number;
@@ -19,7 +19,7 @@ interface CompletedRow {
 
 /**
  * 計分用的課程:已完成、而且不是重上的。
- * 重上用的是同一份題目,分數一定偏高,所以不計入當日分數、月平均與升級判定。
+ * 重上用的是同一份題目,分數一定偏高,所以不計入當日分數與月平均。
  */
 function completedSessions(db: Db, userId: number, from: string, to: string): CompletedRow[] {
   return db
@@ -30,7 +30,7 @@ function completedSessions(db: Db, userId: number, from: string, to: string): Co
     .all(userId, from, to) as unknown as CompletedRow[];
 }
 
-const toScored = (row: CompletedRow): ScoredSession => ({ localDate: row.local_date, score: row.score, level: row.level });
+const toScored = (row: CompletedRow): ScoredSession => ({ localDate: row.local_date, score: row.score });
 
 /** 每堂課之後重上過的紀錄,以原本那堂課的編號為鍵。 */
 function retakesByOriginal(db: Db, userId: number): Map<number, RetakeSummary[]> {
@@ -40,14 +40,6 @@ function retakesByOriginal(db: Db, userId: number): Map<number, RetakeSummary[]>
   const map = new Map<number, RetakeSummary[]>();
   for (const row of rows) map.set(row.retake_of, [...(map.get(row.retake_of) ?? []), { id: row.id, date: row.date, score: row.score }]);
   return map;
-}
-
-function suggestionFor(db: Db, userId: number, level: Level, today: string): LevelUpSuggestion | null {
-  // 升級只看上個月,所以只需要讀上個月的課。
-  const lastMonth = monthRange(previousMonth(monthOf(today)));
-  const sessions = completedSessions(db, userId, lastMonth.from, lastMonth.to).map(toScored);
-  const decided = db.prepare('SELECT month FROM level_decisions WHERE user_id = ?').all(userId) as unknown as { month: string }[];
-  return levelUpSuggestion({ today, level, sessions, decidedMonths: decided.map((row) => row.month) });
 }
 
 export function calendarRouter(db: Db): express.Router {
@@ -92,7 +84,7 @@ export function calendarRouter(db: Db): express.Router {
   // 首頁用的進度摘要。
   router.get('/progress', (req, res) => {
     const userId = parseId(req.query.userId);
-    const user = getUserRow(db, userId);
+    getUserRow(db, userId);
     const today = localDate();
     const range = monthRange(monthOf(today));
     const thisMonth = completedSessions(db, userId, range.from, range.to).map(toScored);
@@ -102,30 +94,8 @@ export function calendarRouter(db: Db): express.Router {
       todayScore: dailyScores(thisMonth).get(today) ?? null,
       monthAverage: monthlyAverage(thisMonth, monthOf(today)),
       dueCount: dueCount(db, userId, today),
-      suggestion: suggestionFor(db, userId, user.level, today),
     };
     res.json(body);
-  });
-
-  // 回應升級建議:接受就升一級;不論接受或婉拒,同一個月份都不再詢問。
-  router.post('/level-decisions', (req, res) => {
-    const { userId, month, decision } = LevelDecisionSchema.parse(req.body);
-    const user = getUserRow(db, userId);
-    const suggestion = suggestionFor(db, userId, user.level, localDate());
-    if (!suggestion || suggestion.month !== month) throw new HttpError(409, '目前沒有這個月份的升級建議');
-
-    transaction(db, () => {
-      db.prepare('INSERT INTO level_decisions (user_id, month, average, from_level, to_level, decision) VALUES (?, ?, ?, ?, ?, ?)').run(
-        userId,
-        month,
-        suggestion.average,
-        suggestion.from,
-        suggestion.to,
-        decision,
-      );
-      if (decision === 'accepted') db.prepare('UPDATE users SET level = ? WHERE id = ?').run(suggestion.to, userId);
-    });
-    res.json(toPublicUser(getUserRow(db, userId)));
   });
 
   return router;

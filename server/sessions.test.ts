@@ -63,6 +63,7 @@ function correctResponse(exercise: Exercise): string {
       return FLASHCARD_KNOWN;
     case 'dictation':
     case 'readAloud':
+    case 'rewrite':
       return exercise.sentence;
   }
 }

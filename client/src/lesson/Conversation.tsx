@@ -130,6 +130,7 @@ export function Conversation({ session, chat, onSend, onSkip }: Props) {
           還可以說 {limit - used} 次(共 {limit} 次)。
         </p>
       )}
+      {recording && <p className="muted small">正在聽…停下來想一想沒關係,說完再按「說完了」。</p>}
       {micError && <p className="feedback feedback-retry">{micError}</p>}
       {error && (
         <div className="alert alert-error">

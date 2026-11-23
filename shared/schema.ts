@@ -268,6 +268,15 @@ export const SessionStateSchema = z.object({
   chatUnavailable: z.boolean().default(false),
   /** 「問老師」的問答紀錄。由伺服器寫入。 */
   asks: z.array(z.object({ question: z.string(), answer: z.string() })).default([]),
+  /** 課前重溫上一課(流暢度練習)的紀錄。不計分;沒做的項目是 null。 */
+  fluency: z
+    .object({
+      /** 計時重讀上一課課文的速度(每分鐘幾個字)。 */
+      readingWpm: z.number().int().min(0).max(2000).nullable().default(null),
+      /** 一分鐘重述時說出(或打出)的英文字數。 */
+      retellWords: z.number().int().min(0).max(2000).nullable().default(null),
+    })
+    .default({ readingWpm: null, retellWords: null }),
 });
 export type SessionState = z.infer<typeof SessionStateSchema>;
 
@@ -352,6 +361,29 @@ export interface SessionView {
   retakes: RetakeSummary[];
   /** 產生這堂課時的重覆檢查結果;舊資料或重上的課沒有。 */
   novelty: LessonNovelty | null;
+  /** 上一堂上完的課,給課前的流暢度練習用;沒有上過別的課時為 null。 */
+  previous: PreviousLesson | null;
+  /** 課後建議看的影片(符合這堂課的等級);課還沒上完,或這個等級沒有影片時為 null。 */
+  video: VideoSuggestion | null;
+}
+
+/** 課後延伸聆聽的影片。課堂上的輸入量不夠,靠這個補。 */
+export interface VideoSuggestion {
+  url: string;
+  title: string;
+  channel: string;
+  /** 大約幾分鐘;不知道時為 null。 */
+  minutes: number | null;
+  /** 同一系列的其他影片(頻道或播放清單)。 */
+  seriesUrl: string;
+}
+
+/** 上一堂課的課文,以及學生最近一次流暢度練習的成績(用來和這次比較)。 */
+export interface PreviousLesson {
+  title: string;
+  text: string;
+  lastReadingWpm: number | null;
+  lastRetellWords: number | null;
 }
 
 // ---- 顯示用的名稱與等級設定(前後端共用) ----

@@ -136,6 +136,16 @@ describe('Gemini:記住剛失敗的模型', () => {
     await expect(t.generate()).resolves.toEqual({ answer: 'strong is back' });
   });
 
+  // 實測遇過:分級測驗的輸出格式太複雜,備援模型回 400。它被當成忙線而跳過 5 分鐘,
+  // 接著的備課在前面的模型逾時後就沒有備援可用了。請求被拒絕是那一次請求的問題,不是模型的問題。
+  it('請求本身被拒絕(400)時改用下一個模型,但這個模型之後的工作照常使用', async () => {
+    const t = setup({ strong: [httpError(400, 'schema has too many states'), ok('strong still works')], medium: [ok('fallback')] });
+
+    await expect(t.generate()).resolves.toEqual({ answer: 'fallback' });
+    await expect(t.generate()).resolves.toEqual({ answer: 'strong still works' });
+    expect(t.modelsCalled()).toEqual(['strong', 'medium', 'strong']);
+  });
+
   // 冷卻是為了少等,不是為了放棄:全部都失敗過時仍然要全部再試一次。
   it('所有模型都在冷卻中時,仍然照順序全部試一次', async () => {
     const t = setup({

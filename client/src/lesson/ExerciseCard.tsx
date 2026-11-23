@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { correctAnswerText, FLASHCARD_FORGOT, FLASHCARD_KNOWN, reorderWords, type Exercise } from '../../../shared/lesson.ts';
+import { FLASHCARD_FORGOT, FLASHCARD_KNOWN, isSentenceExercise, reorderWords, type Exercise, type SentenceExercise } from '../../../shared/lesson.ts';
 import { BLANK, type ExerciseAnswer, type Level } from '../../../shared/schema.ts';
 import { ACCURACY_CORRECT, checkAnswer, gradeExercise, isExerciseDone, wordAccuracy } from '../../../shared/scoring.ts';
 import { useSpeech } from '../speech/SpeechContext.tsx';
 import { isMicUnavailable, listen, sttErrorMessage, type Listening } from '../speech/stt.ts';
 import { speak, speechRate } from '../speech/tts.ts';
 import { praise, teacherLine } from './lines.ts';
+import { Solution } from './Solution.tsx';
 
 interface Props {
   exerciseKey: string;
@@ -43,6 +44,7 @@ export function ExerciseCard({ exerciseKey, exercise, answer = EMPTY, level, onC
       {exercise.type === 'flashcard' && <FlashcardBody exercise={exercise} done={done} onSubmit={submit} />}
       {exercise.type === 'dictation' && <DictationBody exercise={exercise} answer={answer} done={done} level={level} onSubmit={submit} onSelfRate={selfRate} />}
       {exercise.type === 'readAloud' && <ReadAloudBody exercise={exercise} answer={answer} done={done} level={level} onSubmit={submit} onSelfRate={selfRate} />}
+      {exercise.type === 'rewrite' && <RewriteBody exercise={exercise} answer={answer} done={done} onSubmit={submit} />}
 
       {retrying && <p className="feedback feedback-retry">{teacherLine(level, 'retry')}</p>}
       {done && <Result exerciseKey={exerciseKey} exercise={exercise} answer={answer} />}
@@ -59,7 +61,7 @@ function Result({ exerciseKey, exercise, answer }: { exerciseKey: string; exerci
       </div>
     );
   }
-  if (exercise.type === 'dictation' || exercise.type === 'readAloud') {
+  if (isSentenceExercise(exercise)) {
     const best = Math.max(0, ...answer.attempts.map((attempt) => wordAccuracy(exercise.sentence, attempt)));
     return (
       <div className={`feedback feedback-${outcome}`}>
@@ -68,8 +70,14 @@ function Result({ exerciseKey, exercise, answer }: { exerciseKey: string; exerci
         {outcome === 'unknown' && <strong>✗ 這句會列入「不會」,之後會再出現。</strong>}
         <p>
           單字正確率 {Math.round(best * 100)}%
-          {(exercise.type === 'dictation' || outcome !== 'correct') && <>。正確的句子:{exercise.sentence}</>}
+          {(exercise.type !== 'readAloud' || outcome !== 'correct') && (
+            <>
+              。正確的句子:
+              <Solution exercise={exercise} response={answer.attempts.at(-1)} legend />
+            </>
+          )}
         </p>
+        {exercise.explanation && <p>{exercise.explanation}</p>}
       </div>
     );
   }
@@ -79,7 +87,8 @@ function Result({ exerciseKey, exercise, answer }: { exerciseKey: string; exerci
       {outcome === 'unfamiliar' && <strong>◐ 答對了,不過這題會列入「不熟」,之後再複習一次。</strong>}
       {outcome === 'unknown' && (
         <strong>
-          ✗ 正確答案:{correctAnswerText(exercise)}
+          ✗ 正確答案:
+          <Solution exercise={exercise} response={answer.attempts.at(-1)} legend />
           <br />
           這題會列入「不會」,之後會再出現。
         </strong>
@@ -89,10 +98,8 @@ function Result({ exerciseKey, exercise, answer }: { exerciseKey: string; exerci
   );
 }
 
-type SpokenExercise = Extract<Exercise, { type: 'dictation' | 'readAloud' }>;
-
 interface SpokenBodyProps {
-  exercise: SpokenExercise;
+  exercise: SentenceExercise;
   answer: ExerciseAnswer;
   done: boolean;
   level: Level;
@@ -101,7 +108,7 @@ interface SpokenBodyProps {
 }
 
 /** 上一次作答的內容與正確率,讓學生知道差在哪裡。 */
-function LastAttempt({ exercise, answer, label }: { exercise: SpokenExercise; answer: ExerciseAnswer; label: string }) {
+function LastAttempt({ exercise, answer, label }: { exercise: SentenceExercise; answer: ExerciseAnswer; label: string }) {
   const last = answer.attempts.at(-1);
   if (last === undefined) return null;
   return (
@@ -237,10 +244,62 @@ function ReadAloudBody({ exercise, answer, done, level, onSubmit, onSelfRate }: 
             )}
           </div>
           {recording && <p className="heard">{heard || '正在聽…'}</p>}
+          {recording && <p className="muted small">停下來想一想沒關係,錄音不會自己結束。唸完再按「唸完了」。</p>}
           {error && <p className="feedback feedback-retry">{error}</p>}
         </>
       )}
     </>
+  );
+}
+
+/** 訂正:看著自己原本的句子,把正確的說法打出來。第一次沒過會顯示老師的說明當提示。 */
+function RewriteBody({
+  exercise,
+  answer,
+  done,
+  onSubmit,
+}: {
+  exercise: Extract<Exercise, { type: 'rewrite' }>;
+  answer: ExerciseAnswer;
+  done: boolean;
+  onSubmit: (response: string) => void;
+}) {
+  const [draft, setDraft] = useState('');
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!draft.trim()) return;
+    onSubmit(draft.trim());
+    setDraft('');
+  }
+
+  return (
+    <form onSubmit={submit}>
+      <p className="muted small">訂正:這句話有地方不對,把正確的句子打出來</p>
+      <p className="exercise-prompt rewrite-original">{exercise.original}</p>
+      <LastAttempt exercise={exercise} answer={answer} label="你打的" />
+      {!done && (
+        <>
+          {answer.attempts.length > 0 && exercise.explanation && <p className="hint">提示:{exercise.explanation}</p>}
+          <input
+            className="dictation-input"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            maxLength={1000}
+            autoComplete="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            placeholder="Type the correct sentence…"
+            aria-label="正確的句子"
+          />
+          <div className="exercise-actions">
+            <button type="submit" className="button button-primary" disabled={!draft.trim()}>
+              送出
+            </button>
+          </div>
+        </>
+      )}
+    </form>
   );
 }
 

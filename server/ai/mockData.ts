@@ -1,6 +1,8 @@
 import { countWords } from '../../shared/lesson.ts';
-import type { ChatReply, Grade, Lesson } from '../../shared/schema.ts';
+import type { PlacementTest } from '../../shared/placement.ts';
+import { LEVELS, type ChatReply, type Grade, type Lesson } from '../../shared/schema.ts';
 import type { MockFixtures } from './mock.ts';
+import { PLACEMENT_LENGTHS } from './prompts.ts';
 
 /** 假資料模式使用的範例課程(A2 程度),結構與真實 AI 回傳的完全相同。 */
 export const MOCK_LESSON: Lesson = {
@@ -200,7 +202,28 @@ function mockChat(request: { input: string }): ChatReply {
   };
 }
 
+/** 假資料的分級測驗:每個等級 8 題,正確答案都是「(正確)」那個選項。 */
+export function mockPlacementTest(): PlacementTest {
+  const question = (label: string, answerIndex: number) => ({
+    prompt: `(假資料)${label}`,
+    options: [0, 1, 2, 3].map((index) => (index === answerIndex ? '(正確)' : `選項 ${index + 1}`)),
+    answerIndex,
+    explanation: '(假資料)',
+  });
+  const filler = (label: string, words: number) => `${label} ${Array.from({ length: words }, (_, index) => `word${index + 1}`).join(' ')}.`;
+  return {
+    bands: LEVELS.map((level) => ({
+      level,
+      vocab: [question(`${level} 單字 1`, 0), question(`${level} 單字 2`, 1)],
+      grammar: [question(`${level} 文法 1 ___`, 2), question(`${level} 文法 2 ___`, 3), question(`${level} 文法 3 ___`, 0)],
+      reading: { passage: filler(`(假資料)${level} 的閱讀短文:`, PLACEMENT_LENGTHS[level].passage[0]), questions: [question(`${level} 閱讀 1`, 1), question(`${level} 閱讀 2`, 2)] },
+      listening: { script: filler(`This is the ${level} listening script:`, PLACEMENT_LENGTHS[level].script[0]), questions: [question(`${level} 聽力 1`, 3)] },
+    })),
+  };
+}
+
 export const MOCK_FIXTURES: MockFixtures = {
+  placement: mockPlacementTest,
   lesson: MOCK_LESSON,
   grade: mockGrade,
   chat: mockChat,

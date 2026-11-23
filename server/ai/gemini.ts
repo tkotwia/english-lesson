@@ -83,6 +83,12 @@ export interface GeminiOptions {
 /** 實測預設思考下產生一堂課最久 79 秒;品質類的逾時留到兩倍多,避免把正常的產生過程切斷。 */
 export const DEFAULT_TIMEOUT_MS: Record<AiTier, number> = { quality: 180_000, chat: 30_000 };
 
+/**
+ * 這個錯誤是「這次的請求」被拒絕(HTTP 400,例如要求的輸出格式太複雜),而不是模型本身出狀況。
+ * 這種錯誤換一個模型可能就過了,但不能因此把這個模型列為暫時不可用:它處理別的工作完全沒問題。
+ */
+const isRequestRejected = (err: unknown): boolean => typeof err === 'object' && err !== null && (err as { status?: unknown }).status === 400;
+
 /** 模型暫時無法使用(忙線、逾時)時,隔多久再試它。 */
 export const UNAVAILABLE_COOLDOWN_MS = 5 * 60_000;
 
@@ -155,7 +161,7 @@ export function createGeminiProvider(options: GeminiOptions): AiProvider {
             // key 本身有問題時,換模型也沒用。
             if (mapped.code === 'invalid_key') throw mapped;
             console.warn(`[ai] ${request.task} ${model} 無法使用(${mapped.code},等了 ${seconds(startedAt)} 秒):${mapped.detail ?? ''}`);
-            startCooldown(request.apiKey, model, mapped.code);
+            if (!isRequestRejected(err)) startCooldown(request.apiKey, model, mapped.code);
             lastError = mapped;
             break;
           }

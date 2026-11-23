@@ -90,6 +90,7 @@ function correctResponse(exercise: Exercise): string {
     case 'reorder':
     case 'dictation':
     case 'readAloud':
+    case 'rewrite':
       return exercise.sentence;
     case 'flashcard':
       return FLASHCARD_KNOWN;
@@ -243,15 +244,16 @@ describe('預防重覆:主題、文法重點與單字由程式安排', () => {
     expect(grammarOf(lessonPrompts[1]!)).toBe(LEVEL_GUIDES.B1.grammar[0]);
   });
 
-  // 計畫中的「舊內容回收」。
-  it('學生還不熟的單字會被帶回下一堂新課的課文裡', async () => {
+  // 計畫中的「舊內容回收」。答錯過的字最需要再見面,所以排在只是新學的字前面。
+  it('還在學的單字會被帶回下一堂新課的課文裡,答錯過的排最前面', async () => {
     const userId = await newUser();
     await takeLesson(userId, { 'vocab.0': WRONG_TWICE }); // crowded → 不會
     lessonQueue = [SCHOOL];
     await start(userId);
 
     expect(lessonPrompts[0]).not.toContain('still learning these words');
-    expect(lessonPrompts[1]).toContain('do not choose them as target vocabulary: crowded.');
+    expect(lessonPrompts[1]).toContain('do not choose them as target vocabulary: crowded, ');
+    expect(lessonPrompts[1]).toMatch(/still learning these words[^:]*: crowded, .*delicious/);
   });
 });
 
@@ -268,7 +270,7 @@ describe('重上一堂課', () => {
     expect(again.state.chat).toEqual([{ role: 'teacher', text: original.lesson.speaking.opening, corrections: [] }]);
   });
 
-  // 題目已經看過,第二次一定比較高分;算進去會讓 95 分的升級門檻失去意義。
+  // 題目已經看過,第二次一定比較高分;算進去的話,日曆上的分數就不再代表第一次面對這堂課的表現。
   it('重上的分數不計入當日分數與月平均', async () => {
     const userId = await newUser();
     const original = await takeLesson(userId, { 'vocab.0': WRONG_TWICE, 'vocab.1': WRONG_TWICE, 'reading.0': WRONG_TWICE });
@@ -293,7 +295,7 @@ describe('重上一堂課', () => {
     expect(month.days[0]!.sessions[0]!.retakes).toEqual([{ id: again.id, date: TODAY, score: again.result!.score }]);
   });
 
-  it('上個月的重上拿高分,不會讓這個月出現升級建議', async () => {
+  it('上個月重上拿到的高分,不計入那個月的月平均', async () => {
     const userId = await newUser();
     const result: SessionResult = { score: 80, sections: [], weakPoints: [], writing: null, speaking: null, closing: '' };
     const insert = (score: number, retakeOf: number | null) =>
@@ -305,13 +307,11 @@ describe('重上一堂課', () => {
           )
           .run(userId, `${LAST_MONTH}-10`, JSON.stringify(MOCK_LESSON), score, JSON.stringify({ ...result, score }), retakeOf).lastInsertRowid,
       );
-    // 第一次 90 分;若把兩次 100 分的重上也算進去,當日平均會是 96.7,超過 95 的升級門檻。
+    // 第一次 90 分;若把兩次 100 分的重上也算進去,當日平均會是 96.7。
     const original = insert(90, null);
     insert(100, original);
     insert(100, original);
 
-    const summary: ProgressSummary = (await call('GET', `/progress?userId=${userId}`)).json;
-    expect(summary.suggestion).toBeNull();
     const month: CalendarMonth = (await call('GET', `/calendar?userId=${userId}&month=${LAST_MONTH}`)).json;
     expect(month.average).toBe(90);
   });

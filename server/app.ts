@@ -7,10 +7,12 @@ import { AiError, type AiProvider } from './ai/provider.ts';
 import type { Db } from './db.ts';
 import { HttpError } from './errors.ts';
 import { calendarRouter } from './routes/calendar.ts';
+import { placementRouter } from './routes/placement.ts';
 import { reviewRouter } from './routes/review.ts';
 import { sessionsRouter } from './routes/sessions.ts';
 import { settingsRouter } from './routes/settings.ts';
 import { usersRouter } from './routes/users.ts';
+import { wordsRouter } from './routes/words.ts';
 
 export interface AppOptions {
   db: Db;
@@ -39,6 +41,8 @@ export function createApp({ db, ai, staticDir, prepareAhead = false, prepareMinu
   app.use('/api/settings', settingsRouter(db, ai));
   app.use('/api/sessions', sessionsRouter(db, ai, { prepareAhead, prepareMinutes }));
   app.use('/api/review', reviewRouter(db));
+  app.use('/api/placement', placementRouter(db, ai, { prepareAhead }));
+  app.use('/api/words', wordsRouter(db));
   app.use('/api', calendarRouter(db));
 
   app.use('/api', (_req, res) => {

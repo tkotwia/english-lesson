@@ -1,4 +1,5 @@
-import type { ChatTurn, Lesson, Level, Minutes, SectionResult, Stage, ZhSupport } from '../../shared/schema.ts';
+import { PLACEMENT_COUNTS } from '../../shared/placement.ts';
+import { LEVELS, type ChatTurn, type Lesson, type Level, type Minutes, type SectionResult, type Stage, type ZhSupport } from '../../shared/schema.ts';
 import { LEVEL_GUIDES, lessonSize, STAGE_GUIDES } from './cefr.ts';
 
 // 這裡的提示與供應商無關,只產生文字;由 provider 負責送出並驗證回傳的 JSON。
@@ -187,7 +188,7 @@ Fill the JSON fields as follows.
 - writing.score, speaking.score: the scores from 0 to 100.
 - writing.corrected: the student's text with minimal corrections, keeping their ideas and wording wherever it is already correct.
 - writing.comment, speaking.comment: 2–3 sentences each, naming one specific strength and the single most important thing to improve.
-- errors: up to 8 of the most important distinct errors across both parts. "source" is "writing" or "speaking". "original" is the student's exact wording, "corrected" is the fix, "explanation" is a short reason. "severity" is "unknown" for conceptual or repeated errors and "unfamiliar" for occasional slips. Use an empty list if there are no errors.
+- errors: up to 8 of the student's sentences that contain the most important errors across both parts, one entry per sentence. "source" is "writing" or "speaking". "original" is the complete sentence exactly as the student wrote or said it: always the whole sentence, never only the wrong word or phrase. "corrected" is that same complete sentence with every error in it fixed, changing as little as possible. The student will later be shown "original" on its own and asked to type "corrected", so both must be full sentences that make sense without any other context. "explanation" is a short reason covering each change in that sentence. "severity" is "unknown" for conceptual or repeated errors and "unfamiliar" for occasional slips. Use an empty list if there are no errors.
 - closing: your 1–2 sentence closing remark for the whole lesson, mentioning how the student did overall and one thing to review.
 
 Write every "comment", every "explanation" and "closing" ${FEEDBACK_LANGUAGE[guide.zhSupport]}.`;
@@ -271,6 +272,55 @@ Grammar point: ${lesson.grammar.point}
 <student_question>
 ${question}
 </student_question>`;
+
+  return { system, input };
+}
+
+/** 分級測驗各等級的短文與朗讀內容長度(字數)。 */
+export const PLACEMENT_LENGTHS: Record<Level, { passage: [number, number]; script: [number, number] }> = {
+  A1: { passage: [30, 45], script: [12, 20] },
+  A2: { passage: [50, 70], script: [20, 30] },
+  B1: { passage: [80, 100], script: [30, 45] },
+  B2: { passage: [100, 130], script: [45, 60] },
+  C1: { passage: [130, 160], script: [60, 80] },
+  C2: { passage: [150, 180], script: [70, 90] },
+};
+
+/** 出一份分級測驗:A1 到 C2 每個等級一組選擇題。 */
+export function placementPrompt({ stage }: { stage: Stage }): PromptText {
+  const system = `${TEACHER}
+
+You write one English placement test and return it as a single JSON object that matches the provided schema exactly.
+The test has six bands in this exact order: ${LEVELS.join(', ')}. A student works upward from A1 and stops at the first band they fail, so each band must be clearly at its own CEFR level and noticeably harder than the band below it.
+
+Quality rules:
+- Every question is multiple choice with exactly 4 options and exactly one defensible correct answer, which must be the one you mark with the 0-based "answerIndex". Distractors must be plausible to a weaker student but clearly wrong to a competent one. No "all of the above" or "none of the above", no trick questions, no outside knowledge.
+- Within each band, spread the correct answers across the four positions.
+- Everything must be linguistically and factually correct. Use American spelling.
+- Question prompts must be in English that is no harder than the band's own level.`;
+
+  const bands = LEVELS.map((level) => {
+    const guide = LEVEL_GUIDES[level];
+    const length = PLACEMENT_LENGTHS[level];
+    return `${level}: ${guide.canDo}
+  Grammar to test (pick ${PLACEMENT_COUNTS.grammar} different ones): ${guide.grammar.join('; ')}.
+  Reading passage: ${length.passage[0]}–${length.passage[1]} words. Listening script: ${length.script[0]}–${length.script[1]} words.`;
+  }).join('\n');
+
+  const input = `Write a placement test for ${STAGE_GUIDES[stage].audience}
+
+For each band fill these fields:
+- level: the band's CEFR level.
+- vocab: ${PLACEMENT_COUNTS.vocab} questions on word meaning or usage typical of that level. All four options must be the same part of speech and grammatically possible; only one fits the meaning. Do not test grammar here.
+- grammar: ${PLACEMENT_COUNTS.grammar} questions, each a sentence with one blank written as ___ (three underscores), each testing a different structure from the band's grammar list.
+- reading.passage and reading.questions: one short passage at that level and ${PLACEMENT_COUNTS.reading} questions answerable only from it. From B1 upward, one question should need inference.
+- listening.script and listening.questions: a short piece of natural spoken English and ${PLACEMENT_COUNTS.listening} question. The script is read aloud by a single voice and never shown, so write it for one speaker with no dialogue labels, symbols or hard-to-hear numbers. The question must depend on understanding the script.
+- explanation (every question): one short sentence saying why the answer is right.
+
+Bands:
+${bands}
+
+Use fresh sentences and situations; do not reuse stock textbook examples.`;
 
   return { system, input };
 }

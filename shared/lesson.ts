@@ -14,13 +14,31 @@ export interface SpokenSentence {
   explanation: string;
 }
 
+/**
+ * 訂正:看著自己原本寫錯(或說錯)的句子,把正確的說法打出來。和聽寫一樣以單字正確率判定。
+ * 只看老師改好的句子很快就忘;自己動手打一次,才會注意到差在哪裡。
+ */
+export interface Rewrite {
+  /** 學生原本的句子。 */
+  original: string;
+  /** 正確的說法。 */
+  sentence: string;
+  explanation: string;
+}
+
 export type Exercise =
   | ({ type: 'mcq' } & Mcq)
   | ({ type: 'cloze' } & Cloze)
   | ({ type: 'reorder' } & Reorder)
   | ({ type: 'flashcard' } & Flashcard)
   | ({ type: 'dictation' } & SpokenSentence)
-  | ({ type: 'readAloud' } & SpokenSentence);
+  | ({ type: 'readAloud' } & SpokenSentence)
+  | ({ type: 'rewrite' } & Rewrite);
+
+/** 以單字正確率判定的題型:聽寫、跟讀、訂正。 */
+export type SentenceExercise = Extract<Exercise, { type: 'dictation' | 'readAloud' | 'rewrite' }>;
+export const isSentenceExercise = (exercise: Exercise): exercise is SentenceExercise =>
+  exercise.type === 'dictation' || exercise.type === 'readAloud' || exercise.type === 'rewrite';
 
 /** 閃卡的兩種作答。 */
 export const FLASHCARD_KNOWN = 'known';
@@ -128,6 +146,7 @@ export function correctAnswerText(exercise: Exercise): string {
       return exercise.back;
     case 'dictation':
     case 'readAloud':
+    case 'rewrite':
       return exercise.sentence;
   }
 }

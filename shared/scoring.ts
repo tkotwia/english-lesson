@@ -1,13 +1,15 @@
 import {
   correctAnswerText,
   FLASHCARD_KNOWN,
+  isSentenceExercise,
+  type Rewrite,
   lessonExercises,
   reviewExercises,
   SPEAKING_WEIGHTS,
   type Exercise,
   type ReviewItemView,
 } from './lesson.ts';
-import type { ExerciseAnswer, Grade, Lesson, Outcome, Section, SectionResult, SessionResult, SessionState, WeakPoint } from './schema.ts';
+import { BLANK, type ExerciseAnswer, type Grade, type Lesson, type Outcome, type Section, type SectionResult, type SessionResult, type SessionState, type WeakPoint } from './schema.ts';
 
 /** 各階段的配分,合計 100。某階段無法進行時,其餘階段等比例放大。 */
 export const SECTION_WEIGHTS: Record<Section, number> = {
@@ -37,24 +39,55 @@ export const ACCURACY_CORRECT = 0.9;
 /** 聽寫與跟讀:單字正確率達到這個比例(但未達答對標準)算不熟,低於則算不會。 */
 export const ACCURACY_UNFAMILIAR = 0.7;
 
+const wordsOf = (text: string): string[] => normalizeAnswer(text).split(' ').filter(Boolean);
+
+/** 最長共同子序列:expected 裡的每個字,有沒有依序對上 actual 裡的字。 */
+function matchInOrder(expected: string[], actual: string[]): boolean[] {
+  const rows = expected.length;
+  const columns = actual.length;
+  // lengths[i][j]:expected 的前 i 個字與 actual 的前 j 個字,最多能依序對上幾個。
+  const lengths = Array.from({ length: rows + 1 }, () => new Array<number>(columns + 1).fill(0));
+  for (let i = 1; i <= rows; i++) {
+    for (let j = 1; j <= columns; j++) {
+      lengths[i]![j] = expected[i - 1] === actual[j - 1] ? lengths[i - 1]![j - 1]! + 1 : Math.max(lengths[i - 1]![j]!, lengths[i]![j - 1]!);
+    }
+  }
+  const matched = new Array<boolean>(rows).fill(false);
+  for (let i = rows, j = columns; i > 0 && j > 0; ) {
+    if (expected[i - 1] === actual[j - 1]) {
+      matched[i - 1] = true;
+      i--;
+      j--;
+    } else if (lengths[i - 1]![j]! >= lengths[i]![j - 1]!) i--;
+    else j--;
+  }
+  return matched;
+}
+
 /**
  * 單字正確率:兩句話依序對得上的單字數,除以較長那一句的字數。
  * 少寫、多寫、寫錯或順序不對都會拉低正確率。
  */
 export function wordAccuracy(expected: string, actual: string): number {
-  const a = normalizeAnswer(expected).split(' ').filter(Boolean);
-  const b = normalizeAnswer(actual).split(' ').filter(Boolean);
+  const a = wordsOf(expected);
+  const b = wordsOf(actual);
   if (a.length === 0 || b.length === 0) return 0;
-  // 最長共同子序列:依序對得上的單字數。
-  let previous = new Array<number>(b.length + 1).fill(0);
-  for (const word of a) {
-    const current = [0];
-    for (let j = 1; j <= b.length; j++) {
-      current[j] = word === b[j - 1] ? previous[j - 1]! + 1 : Math.max(previous[j]!, current[j - 1]!);
-    }
-    previous = current;
-  }
-  return previous[b.length]! / Math.max(a.length, b.length);
+  return matchInOrder(a, b).filter(Boolean).length / Math.max(a.length, b.length);
+}
+
+/**
+ * 訂正題:學生是不是真的把錯的地方改對了。
+ * 長句子只改一個字時,照抄原本錯的句子也有九成以上的字是對的;只看正確率的話,沒訂正也會過關。
+ * 所以另外要求:正確說法裡「原句沒有的字」都要出現,而且不能和原句一模一樣。
+ */
+function appliesCorrection(exercise: Rewrite, response: string): boolean {
+  const corrected = wordsOf(exercise.sentence);
+  const original = wordsOf(exercise.original);
+  const given = wordsOf(response);
+  if (given.join(' ') === original.join(' ')) return false;
+  const inOriginal = matchInOrder(corrected, original);
+  const inResponse = matchInOrder(corrected, given);
+  return corrected.every((_, index) => inOriginal[index] || inResponse[index]);
 }
 
 /** 單次作答是否正確。選擇題的作答內容是選項索引(字串)。 */
@@ -73,6 +106,8 @@ export function checkAnswer(exercise: Exercise, response: string): boolean {
     case 'dictation':
     case 'readAloud':
       return wordAccuracy(exercise.sentence, response) >= ACCURACY_CORRECT;
+    case 'rewrite':
+      return wordAccuracy(exercise.sentence, response) >= ACCURACY_CORRECT && appliesCorrection(exercise, response);
   }
 }
 
@@ -97,8 +132,8 @@ export function gradeExercise(exercise: Exercise, answer: ExerciseAnswer | undef
   const attempts = answer?.attempts.slice(0, maxAttempts(exercise)) ?? [];
   const correctAt = attempts.findIndex((attempt) => checkAnswer(exercise, attempt));
   if (correctAt === -1) {
-    // 聽寫與跟讀:沒達到答對標準,但大部分的字都對,算不熟而不是不會。
-    if (exercise.type === 'dictation' || exercise.type === 'readAloud') {
+    // 聽寫、跟讀與訂正:沒達到答對標準,但大部分的字都對,算不熟而不是不會。
+    if (isSentenceExercise(exercise)) {
       const best = Math.max(0, ...attempts.map((attempt) => wordAccuracy(exercise.sentence, attempt)));
       if (best >= ACCURACY_UNFAMILIAR) return { outcome: 'unfamiliar', credit: 0.5 };
     }
@@ -112,6 +147,74 @@ export function gradeExercise(exercise: Exercise, answer: ExerciseAnswer | undef
 export function isExerciseDone(exercise: Exercise, answer: ExerciseAnswer | undefined): boolean {
   if (!answer) return false;
   return answer.attempts.length >= maxAttempts(exercise) || answer.attempts.some((attempt) => checkAnswer(exercise, attempt));
+}
+
+/**
+ * 學生答錯時的作答內容,寫成看得懂的文字(選擇題是選項的文字,不是第幾個選項)。
+ * 回顧時用來讓學生看到自己當時錯在哪裡。閃卡是自我評量,沒有作答內容。
+ */
+export function wrongResponses(exercise: Exercise, answer: ExerciseAnswer | undefined): string[] {
+  if (exercise.type === 'flashcard') return [];
+  const attempts = answer?.attempts.slice(0, maxAttempts(exercise)) ?? [];
+  const texts = attempts
+    .filter((attempt) => !checkAnswer(exercise, attempt))
+    .map((attempt) => (exercise.type === 'mcq' ? (attempt.trim() === '' ? '' : (exercise.options[Number(attempt)] ?? '')) : attempt.trim()))
+    .filter(Boolean);
+  return [...new Set(texts)];
+}
+
+/** 正確答案的一段文字;missed 表示這一段是學生答錯的地方,顯示時要標出來。 */
+export interface MarkedText {
+  text: string;
+  missed: boolean;
+}
+
+/**
+ * 把正確答案切成幾段,標出學生答錯的地方,讓學生一眼看到差在哪裡:
+ * - 克漏字:空格裡該填的字。
+ * - 重組、聽寫、跟讀:沒有依序對上的字(大小寫與標點不同不算錯)。
+ * - 選擇題與閃卡整個答案就是一個選項或說法,不標。
+ * response 是學生答錯的那一次作答;沒有(或沒有內容)就什麼都不標。
+ */
+export function markSolution(exercise: Exercise, response: string | undefined): MarkedText[] {
+  const plain: MarkedText[] = [{ text: correctAnswerText(exercise), missed: false }];
+  if (response === undefined || exercise.type === 'mcq' || exercise.type === 'flashcard') return plain;
+
+  if (exercise.type === 'cloze') {
+    const at = exercise.sentence.indexOf(BLANK);
+    if (at === -1 || response.trim() === '') return plain;
+    return [
+      { text: exercise.sentence.slice(0, at), missed: false },
+      { text: exercise.answers[0] ?? '', missed: true },
+      { text: exercise.sentence.slice(at + BLANK.length), missed: false },
+    ].filter((part) => part.text !== '');
+  }
+
+  const given = wordsOf(response);
+  if (given.length === 0) return plain;
+  // 畫面上的一個字(例如 well-known)比對時可能算成好幾個字;其中任何一個沒對上,整個字都標出來。
+  const tokens = exercise.sentence.trim().split(/\s+/);
+  const tokenWords = tokens.map(wordsOf);
+  const matched = matchInOrder(tokenWords.flat(), given);
+  let next = 0;
+  const missed = tokenWords.map((words) => {
+    const flags = matched.slice(next, next + words.length);
+    next += words.length;
+    return flags.includes(false);
+  });
+
+  const parts: MarkedText[] = [];
+  const add = (text: string, isMissed: boolean) => {
+    const last = parts.at(-1);
+    if (last && last.missed === isMissed) last.text += text;
+    else parts.push({ text, missed: isMissed });
+  };
+  tokens.forEach((token, index) => {
+    // 連續答錯的字連同中間的空白標成一整段。
+    if (index > 0) add(' ', missed[index]! && missed[index - 1]!);
+    add(token, missed[index]!);
+  });
+  return parts;
 }
 
 const round1 = (n: number) => Math.round(n * 10) / 10;

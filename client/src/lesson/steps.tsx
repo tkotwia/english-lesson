@@ -166,29 +166,34 @@ export function LanguageStep({ session, state, exercises, onAnswer, onNext, next
   const { tts } = useSpeech();
   // 國小學生打字慢,單字題改成從今天的單字裡點選;要選對仍然得知道意思。
   const wordBank = session.stage === 'elementary' ? lesson.vocab.map((vocab) => vocab.word) : undefined;
+  // 練習單字時把單字表收起來:看著表作答只是照抄,要自己回想才記得住。做完再顯示,方便對照與標記不熟。
+  const wordsHidden = practising && !vocabDone;
 
   return (
     <>
       <Line level={level} id="vocabIntro" />
-      <div className="vocab-list">
-        {lesson.vocab.map((vocab, index) => (
-          <div key={vocab.word} className="vocab-card">
-            <div className="vocab-head">
-              <span>
-                <strong className="vocab-word">{vocab.word}</strong> <span className="muted">{vocab.pos}</span>
-                {tts && (
-                  <button type="button" className="speak-button" onClick={() => speak(`${vocab.word}. ${vocab.example}`, { rate: speechRate(level) })} aria-label={`聽 ${vocab.word} 的發音`}>
-                    🔊
-                  </button>
-                )}
-              </span>
-              <FlagButton target={`vocab.${index}`} flagging={flagging} />
+      {wordsHidden && <p className="vocab-hidden muted">單字表先收起來了,請靠自己回想。做完下面的單字練習,它會再出現。</p>}
+      {!wordsHidden && (
+        <div className="vocab-list">
+          {lesson.vocab.map((vocab, index) => (
+            <div key={vocab.word} className="vocab-card">
+              <div className="vocab-head">
+                <span>
+                  <strong className="vocab-word">{vocab.word}</strong> <span className="muted">{vocab.pos}</span>
+                  {tts && (
+                    <button type="button" className="speak-button" onClick={() => speak(`${vocab.word}. ${vocab.example}`, { rate: speechRate(level) })} aria-label={`聽 ${vocab.word} 的發音`}>
+                      🔊
+                    </button>
+                  )}
+                </span>
+                <FlagButton target={`vocab.${index}`} flagging={flagging} />
+              </div>
+              <div>{vocab.meaning}</div>
+              <div className="vocab-example">{vocab.example}</div>
             </div>
-            <div>{vocab.meaning}</div>
-            <div className="vocab-example">{vocab.example}</div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
 
       {!practising && <NextButton label="記住了,開始練習" onClick={() => setPractising(true)} />}
       {practising && (

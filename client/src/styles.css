@@ -392,6 +392,11 @@ h3 {
   color: var(--warn);
 }
 
+.tag-learning {
+  background: #e8efff;
+  color: #2f54c8;
+}
+
 .choice-row {
   display: flex;
   gap: 0.6rem;
@@ -913,6 +918,34 @@ h3 {
   font-weight: 600;
 }
 
+.wrong-answer {
+  color: var(--danger);
+}
+
+/* 訂正題:學生原本寫錯的句子。 */
+.rewrite-original {
+  color: var(--danger);
+}
+
+/* 正確答案裡,學生答錯的地方。 */
+mark.missed {
+  padding: 0 0.2rem;
+  border-radius: 4px;
+  background: #ffe066;
+  color: var(--text);
+}
+
+.missed-legend {
+  margin-left: 0.4rem;
+  color: var(--muted);
+  font-size: 0.85em;
+  font-weight: 400;
+}
+
+.vocab-hidden {
+  margin: 0 0 0.8rem;
+}
+
 .writing-text {
   margin: 0.2rem 0 0;
   padding: 0.7rem 1rem;
@@ -1050,22 +1083,6 @@ h3 {
 .stat-value {
   font-size: 2.2rem;
   line-height: 1.2;
-}
-
-.levelup {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1.2rem;
-  flex-wrap: wrap;
-  padding: 1.1rem 1.4rem;
-  background: #fff8e1;
-  border: 2px solid #f0b429;
-  border-radius: var(--radius);
-}
-
-.levelup p {
-  margin: 0.2rem 0 0;
 }
 
 /* ---- 日曆 ---- */
@@ -1535,4 +1552,116 @@ strong.tone-low {
 
 .wait-progress .small {
   margin: 0.2rem 0 0;
+}
+
+/* 課前重溫上一課(流暢度練習) */
+.fluency-title {
+  margin: 0 0 0.6rem;
+}
+
+.fluency-part {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.9rem 1.1rem;
+  margin-bottom: 0.9rem;
+}
+
+.fluency-part h3 {
+  margin: 0 0 0.5rem;
+}
+
+.fluency-passage {
+  margin: 0.6rem 0;
+  font-size: 1.15rem;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.fluency-timer {
+  margin: 0.4rem 0;
+  font-size: 1.1rem;
+}
+
+.fluency-typing {
+  width: 100%;
+  font: inherit;
+  padding: 0.6rem 0.8rem;
+  border: 2px solid var(--border);
+  border-radius: 8px;
+}
+
+/* 分級測驗 */
+.placement-level {
+  font-size: 1.3rem;
+}
+
+.placement-level strong {
+  font-size: 1.8rem;
+  color: var(--primary, #3b6cf6);
+}
+
+.placement-table {
+  border-collapse: collapse;
+  margin: 0.6rem 0 1rem;
+}
+
+.placement-table th,
+.placement-table td {
+  padding: 0.35rem 1.2rem 0.35rem 0;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.placement-passage {
+  margin: 0 0 0.9rem;
+  padding: 0.7rem 0.9rem;
+  background: #f4f6fb;
+  border-radius: 8px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+/* 單字表 */
+.word-list li.is-missed {
+  background: var(--danger-bg);
+  margin: 0 -0.6rem;
+  padding-left: 0.6rem;
+  padding-right: 0.6rem;
+  border-radius: 8px;
+}
+
+.word-tags {
+  display: flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* 課後建議的影片 */
+.video-link {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  padding: 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.video-link:hover {
+  border-color: var(--primary);
+}
+
+.video-link img {
+  border-radius: 8px;
+  flex-shrink: 0;
+  object-fit: cover;
+}
+
+.video-link span {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
 }

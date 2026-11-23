@@ -3,11 +3,13 @@ import { Layout } from './components/Layout.tsx';
 import { Calendar } from './pages/Calendar.tsx';
 import { Home } from './pages/Home.tsx';
 import { Lesson } from './pages/Lesson.tsx';
+import { Placement } from './pages/Placement.tsx';
 import { Review } from './pages/Review.tsx';
 import { ReviewPractice } from './pages/ReviewPractice.tsx';
 import { SessionSummary } from './pages/SessionSummary.tsx';
 import { Settings } from './pages/Settings.tsx';
 import { UserSelect } from './pages/UserSelect.tsx';
+import { Words } from './pages/Words.tsx';
 import { useUsers } from './userContext.tsx';
 
 function RequireUser() {
@@ -30,6 +32,8 @@ export function App() {
           <Route path="/calendar" element={<Calendar />} />
           <Route path="/review" element={<Review />} />
           <Route path="/review/practice" element={<ReviewPractice />} />
+          <Route path="/words" element={<Words />} />
+          <Route path="/placement" element={<Placement />} />
           <Route path="/settings" element={<Settings />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

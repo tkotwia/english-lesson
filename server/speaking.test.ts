@@ -69,6 +69,7 @@ function correctResponse(exercise: Exercise): string {
     case 'reorder':
     case 'dictation':
     case 'readAloud':
+    case 'rewrite':
       return exercise.sentence;
     case 'flashcard':
       return FLASHCARD_KNOWN;
@@ -282,15 +283,16 @@ describe('六個階段的計分', () => {
     const weak = Object.fromEntries(done.result!.weakPoints.map((w) => [w.key, w]));
     expect(weak['listening.d.0']).toMatchObject({ kind: 'listening', outcome: 'unknown', answer: 'They bought fried chicken and shared it.' });
     expect(weak['speaking.r.0']).toMatchObject({ kind: 'speaking', outcome: 'unfamiliar' });
-    const kinds = (db.prepare('SELECT kind FROM items ORDER BY kind').all() as unknown as { kind: string }[]).map((row) => row.kind);
+    // 第一次就答對的新單字也在項目庫裡(狀態是「新學」),這裡只看被記為不會或不熟的項目。
+    const kinds = (db.prepare(`SELECT kind FROM items WHERE status != 'learning' ORDER BY kind`).all() as unknown as { kind: string }[]).map((row) => row.kind);
     expect(kinds).toEqual(['listening', 'speaking']);
   });
 
-  it('對話中的錯誤做成口說類的複習閃卡', async () => {
+  it('對話中的錯誤做成口說類的訂正題', async () => {
     const session = await startLesson();
     await talk(session, 1);
     await complete(session, { writing: '' });
     const item = db.prepare(`SELECT content_json FROM items WHERE kind = 'speaking' AND item_key LIKE 'speaking:i eat%'`).get() as { content_json: string };
-    expect(JSON.parse(item.content_json).quiz).toMatchObject({ type: 'flashcard', back: 'I ate fried chicken there.' });
+    expect(JSON.parse(item.content_json).quiz).toMatchObject({ type: 'rewrite', sentence: 'I ate fried chicken there.' });
   });
 });

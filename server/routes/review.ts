@@ -41,9 +41,9 @@ export function reviewRouter(db: Db): express.Router {
     const graded = gradeReviewAnswers(db, userId, answers);
     const today = localDate();
     transaction(db, () => {
-      for (const { itemId, outcome } of graded) recordReviewResult(db, itemId, outcome, null, today);
+      for (const { itemId, outcome, responses } of graded) recordReviewResult(db, itemId, outcome, null, today, responses);
     });
-    res.json({ results: graded });
+    res.json({ results: graded.map(({ itemId, outcome }) => ({ itemId, outcome })) });
   });
 
   return router;

@@ -6,9 +6,25 @@ import { ZH_SUPPORT, type Level } from '../../../shared/schema.ts';
 export const TEACHER_NAME = 'Emma 老師';
 
 const LINES = {
+  fluencyIntro: {
+    zh: '開始新課之前,先花兩三分鐘重溫上一課的課文。內容你已經熟了,所以這次的目標是「快」:聽得懂、讀得快、說得順。這部分不計分,也可以跳過。',
+    en: 'Before the new lesson, let’s spend two or three minutes on the passage from last time. You already know it, so the goal now is speed: follow it by ear, read it faster, and say it smoothly. This part is not scored, and you can skip it.',
+  },
+  fluencyRead: {
+    zh: '按「開始計時」後課文會出現。讀懂就好,盡量快,讀完按「讀完了」。',
+    en: 'Press “開始計時” and the passage will appear. Read for meaning as fast as you comfortably can, then press “讀完了”.',
+  },
+  fluencyRetell: {
+    zh: '不看課文,用英文說出這篇課文在講什麼。不用完美,想到什麼就說什麼,說得越多越好。',
+    en: 'Without looking at the passage, say in English what it was about. It does not need to be perfect. Keep going and say as much as you can.',
+  },
+  fluencyDone: {
+    zh: '很好!熱身完成,開始今天的課。',
+    en: 'Nice work! Now for today’s lesson.',
+  },
   reviewIntro: {
-    zh: '上課前先暖身一下:這些是你之前不會或不熟的地方,看看現在記不記得。',
-    en: 'Let’s warm up first: these are things you found hard before. Let’s see what you remember now.',
+    zh: '上課前先暖身一下:這些是今天該複習的內容,有之前學過的單字,也有之前不會或不熟的地方。看看現在還記不記得。',
+    en: 'Let’s warm up first with today’s review: words you learned earlier and things you found hard before. Let’s see what you remember now.',
   },
   reviewDone: {
     zh: '暖身完成!答對的會隔久一點再出現,還不熟的明天會再複習。',

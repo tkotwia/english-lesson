@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { Exercise } from './lesson.ts';
-import { checkAnswer, combineScore, gradeExercise, isExerciseDone, normalizeAnswer, wordAccuracy } from './scoring.ts';
+import { correctAnswerText, FLASHCARD_FORGOT, type Exercise } from './lesson.ts';
+import { checkAnswer, combineScore, gradeExercise, isExerciseDone, markSolution, normalizeAnswer, wordAccuracy, wrongResponses } from './scoring.ts';
 
 const mcq: Exercise = { type: 'mcq', prompt: 'Pick B', options: ['A', 'B', 'C'], answerIndex: 1, explanation: 'because' };
 const cloze: Exercise = { type: 'cloze', sentence: 'I ___ happy.', answers: ['am', "'m"], hint: 'be 動詞', explanation: 'because' };
@@ -47,7 +47,7 @@ describe('單題判定:分數要能區分「會」「不熟」「不會」', () 
     expect(gradeExercise(mcq, { attempts: ['0', '2'], hintUsed: false })).toEqual({ outcome: 'unknown', credit: 0 });
   });
 
-  // 否則學生可以跳過不會的題目來拉高分數,95 分的升級門檻就失去意義。
+  // 否則學生可以跳過不會的題目來拉高分數,分數就不代表學會了多少。
   it('沒作答視同不會,不能靠跳題拉高分數', () => {
     expect(gradeExercise(mcq, undefined)).toEqual({ outcome: 'unknown', credit: 0 });
     expect(gradeExercise(mcq, { attempts: [], hintUsed: false })).toEqual({ outcome: 'unknown', credit: 0 });
@@ -135,5 +135,153 @@ describe('聽寫與跟讀:以單字正確率判定', () => {
     expect(isExerciseDone(dictation, { attempts: ['They bought chicken it'], hintUsed: false })).toBe(false);
     expect(isExerciseDone(dictation, { attempts: ['They bought fried chicken and shared it'], hintUsed: false })).toBe(true);
     expect(isExerciseDone(dictation, { attempts: ['x', 'y'], hintUsed: false })).toBe(true);
+  });
+});
+
+// 訂正:老師指出的錯句,學生要自己把正確的說法打出來。
+describe('訂正題', () => {
+  const rewrite: Exercise = { type: 'rewrite', original: 'I go to the park yesterday.', sentence: 'I went to the park yesterday.', explanation: '過去式' };
+  const once = (response: string) => gradeExercise(rewrite, { attempts: [response], hintUsed: false });
+
+  it('打出正確的句子算答對;大小寫與標點不影響', () => {
+    expect(once('i went to the park yesterday')).toEqual({ outcome: 'correct', credit: 1 });
+  });
+
+  // 訂正的重點就是那個改掉的字。照抄原句如果也能過關,這個練習就沒有意義。
+  it('照抄原本錯的句子不算答對', () => {
+    expect(checkAnswer(rewrite, rewrite.original)).toBe(false);
+  });
+
+  // 12 個字只改 1 個:照抄原句也有 92% 的字是對的。只看正確率的話,沒訂正也會過關。
+  it('長句子照抄原句,即使大部分的字都對,也不算答對', () => {
+    const long: Exercise = {
+      type: 'rewrite',
+      original: 'Last summer my family and I go to a small town near Hualien.',
+      sentence: 'Last summer my family and I went to a small town near Hualien.',
+      explanation: '過去式',
+    };
+    expect(checkAnswer(long, long.original)).toBe(false);
+    // 改對了,但別的地方漏一個字:九成以上正確,算對。
+    expect(checkAnswer(long, 'Last summer my family and I went to small town near Hualien.')).toBe(true);
+    // 沒改到重點,只是別的地方不一樣:不算對。
+    expect(checkAnswer(long, 'Last summer my family and I go to a town near Hualien.')).toBe(false);
+  });
+
+  it('訂正是刪掉多餘的字時,照抄原句同樣不算答對', () => {
+    const extra: Exercise = {
+      type: 'rewrite',
+      original: 'I am agree with you about this plan very much.',
+      sentence: 'I agree with you about this plan very much.',
+      explanation: 'agree 是動詞,前面不加 am',
+    };
+    expect(checkAnswer(extra, extra.original)).toBe(false);
+    expect(checkAnswer(extra, extra.sentence)).toBe(true);
+  });
+
+  it('和其他題目一樣有兩次機會,第二次才對算不熟', () => {
+    expect(isExerciseDone(rewrite, { attempts: ['I go to the park yesterday.'], hintUsed: false })).toBe(false);
+    expect(gradeExercise(rewrite, { attempts: ['I go to the park yesterday.', 'I went to the park yesterday.'], hintUsed: false }).outcome).toBe('unfamiliar');
+  });
+
+  it('答錯時,正確的句子裡標出改掉的那個字', () => {
+    expect(markSolution(rewrite, rewrite.original).filter((part) => part.missed).map((part) => part.text)).toEqual(['went']);
+  });
+});
+
+// 回顧時要讓學生看到「自己當時答了什麼」,才知道錯在哪裡。
+describe('學生答錯的內容', () => {
+  const answered = (...attempts: string[]) => ({ attempts, hintUsed: false });
+
+  // 作答紀錄存的是第幾個選項;學生看到「0」不會知道自己選了什麼。
+  it('選擇題列出選項的文字,不是選項的編號', () => {
+    expect(wrongResponses(mcq, answered('0', '2'))).toEqual(['A', 'C']);
+  });
+
+  it('第二次才答對:只列第一次答錯的內容', () => {
+    expect(wrongResponses(cloze, answered('is', 'am'))).toEqual(['is']);
+  });
+
+  it('兩次都錯就兩次都列;兩次答的一樣只列一次', () => {
+    expect(wrongResponses(cloze, answered('is', 'are'))).toEqual(['is', 'are']);
+    expect(wrongResponses(cloze, answered('is', ' is '))).toEqual(['is']);
+  });
+
+  // 這種情況被記為不熟,但學生並沒有答錯,不能憑空列出一個錯誤答案。
+  it('看了提示才答對的,沒有答錯的內容', () => {
+    expect(wrongResponses(cloze, { attempts: ['am'], hintUsed: true })).toEqual([]);
+  });
+
+  it('閃卡與自評沒有作答內容', () => {
+    const card: Exercise = { type: 'flashcard', front: 'I go yesterday.', back: 'I went yesterday.', explanation: '' };
+    const dictation: Exercise = { type: 'dictation', sentence: 'They went home.', explanation: '' };
+    expect(wrongResponses(card, answered(FLASHCARD_FORGOT))).toEqual([]);
+    expect(wrongResponses(dictation, answered('', ''))).toEqual([]);
+    expect(wrongResponses(cloze, undefined)).toEqual([]);
+  });
+});
+
+// 只給正確答案,學生還得自己逐字比對;標出錯的地方才看得到差在哪裡。
+describe('在正確答案裡標出答錯的地方', () => {
+  const dictation: Exercise = { type: 'dictation', sentence: 'I went to school yesterday.', explanation: '' };
+  const missed = (exercise: Exercise, response: string | undefined) =>
+    markSolution(exercise, response)
+      .filter((part) => part.missed)
+      .map((part) => part.text);
+
+  it('克漏字:標出空格裡該填的字', () => {
+    expect(markSolution(cloze, 'is')).toEqual([
+      { text: 'I ', missed: false },
+      { text: 'am', missed: true },
+      { text: ' happy.', missed: false },
+    ]);
+  });
+
+  it('聽寫與跟讀:只標沒有對上的字', () => {
+    expect(missed(dictation, 'I go to school yesterday')).toEqual(['went']);
+    expect(missed({ ...dictation, type: 'readAloud' }, 'I went to school')).toEqual(['yesterday.']);
+  });
+
+  // 判分時不計大小寫與標點,標示也要一致,否則會把算對的字標成錯的。
+  it('大小寫與標點不同不算錯', () => {
+    expect(missed(dictation, 'i WENT to school, yesterday!')).toEqual([]);
+    expect(missed({ type: 'dictation', sentence: 'It’s nine o’clock.', explanation: '' }, "it's nine o'clock")).toEqual([]);
+  });
+
+  it('連續答錯的字標成一整段,不是一個字一段', () => {
+    expect(missed(dictation, 'I yesterday')).toEqual(['went to school']);
+  });
+
+  it('重組:標出位置排錯的字', () => {
+    expect(missed(reorder, "We didn't basketball play yesterday.")).toHaveLength(1);
+    expect(missed(reorder, reorder.sentence)).toEqual([]);
+  });
+
+  // 畫面上是一個字,不能只標半個。
+  it('帶連字號的字只要有一部分沒對上,整個字都標出來', () => {
+    const exercise: Exercise = { type: 'dictation', sentence: 'She is a well-known writer.', explanation: '' };
+    expect(missed(exercise, 'She is a well writer')).toEqual(['well-known']);
+  });
+
+  // 沒有可以比對的作答時(手動標記、自評、選擇題),整句都標起來沒有意義。
+  it('沒有作答內容、選擇題、閃卡:什麼都不標', () => {
+    expect(missed(dictation, undefined)).toEqual([]);
+    expect(missed(dictation, '')).toEqual([]);
+    expect(missed(cloze, undefined)).toEqual([]);
+    expect(missed(mcq, '0')).toEqual([]);
+  });
+
+  // 標示只是加上記號,不能改掉答案本身。
+  it('各段接起來就是原本的正確答案', () => {
+    for (const [exercise, response] of [
+      [cloze, 'is'],
+      [reorder, 'yesterday We play'],
+      [dictation, 'went I school to'],
+      [mcq, '0'],
+    ] as const) {
+      const joined = markSolution(exercise, response)
+        .map((part) => part.text)
+        .join('');
+      expect(joined).toBe(correctAnswerText(exercise));
+    }
   });
 });

@@ -7,16 +7,29 @@ import { SpeechProvider, type SpeechAbility } from '../speech/SpeechContext.tsx'
 import { sttSupported } from '../speech/stt.ts';
 import { autoSpeakEnabled, setAutoSpeak, stopSpeaking, ttsSupported } from '../speech/tts.ts';
 import { AskTeacher } from './AskTeacher.tsx';
+import { FluencyStep } from './FluencyStep.tsx';
 import { LanguageStep, ListeningStep, ReadingStep, ReviewStep, SpeakingStep, WritingStep } from './steps.tsx';
 
 const WRITING_SAVE_DELAY_MS = 800;
 
+/** 課堂的階段:計分的六個部分,加上課前不計分的「重溫上一課」。 */
+type StepId = 'fluency' | Section;
+const STEP_LABELS: Record<StepId, string> = { fluency: '重溫上一課', ...SECTION_LABELS };
+
 /**
  * 這堂課要上哪些階段。
- * 沒有到期的複習項目就沒有暖身複習;瀏覽器不能朗讀就沒有聽力。
+ * 之前上過別的課才有重溫(重上的課不重溫,保持簡短);沒有到期的複習項目就沒有暖身複習;瀏覽器不能朗讀就沒有聽力。
  */
-function stepsFor(session: SessionView, tts: boolean): Section[] {
-  return [...(session.review.length > 0 ? (['review'] as const) : []), ...(tts ? (['listening'] as const) : []), 'reading', 'language', 'speaking', 'writing'];
+function stepsFor(session: SessionView, tts: boolean): StepId[] {
+  return [
+    ...(session.previous && session.retakeOf === null ? (['fluency'] as const) : []),
+    ...(session.review.length > 0 ? (['review'] as const) : []),
+    ...(tts ? (['listening'] as const) : []),
+    'reading',
+    'language',
+    'speaking',
+    'writing',
+  ];
 }
 
 /** 還沒開始作答:這時才依瀏覽器的能力決定要不要有聽力與跟讀,開始之後就固定下來。 */
@@ -173,7 +186,7 @@ export function LessonPlayer({ session, onAbandoned }: Props) {
     exercises,
     onAnswer,
     onNext: () => update({ step: stepIndex + 1 }),
-    nextLabel: nextStep ? SECTION_LABELS[nextStep] : '',
+    nextLabel: nextStep ? STEP_LABELS[nextStep] : '',
     flagging: { flags: state.flags, onFlag },
     showIntro: stepIndex === 0,
   };
@@ -206,7 +219,7 @@ export function LessonPlayer({ session, onAbandoned }: Props) {
           {steps.map((id, index) => (
             <li key={id} className={index === stepIndex ? 'is-current' : index < stepIndex ? 'is-done' : ''}>
               <span className="step-dot">{index < stepIndex ? '✓' : index + 1}</span>
-              {SECTION_LABELS[id]}
+              {STEP_LABELS[id]}
             </li>
           ))}
         </ol>
@@ -214,6 +227,17 @@ export function LessonPlayer({ session, onAbandoned }: Props) {
         {saveError && <p className="alert alert-error">進度沒有存成功:{saveError}</p>}
 
         <div className="thread">
+          {step === 'fluency' && (
+            <FluencyStep
+              key="fluency"
+              session={session}
+              state={state}
+              onFluency={(record) => update({ fluency: { ...latest.current.fluency, ...record } })}
+              onNext={stepProps.onNext}
+              nextLabel={stepProps.nextLabel}
+              showIntro={stepProps.showIntro}
+            />
+          )}
           {step === 'review' && <ReviewStep key="review" {...stepProps} />}
           {step === 'listening' && <ListeningStep key="listening" {...stepProps} />}
           {step === 'reading' && <ReadingStep key="reading" {...stepProps} />}

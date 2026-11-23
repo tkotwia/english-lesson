@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { FlagSchema } from '../../shared/api.ts';
 import { localDate } from '../../shared/dates.ts';
 import { lessonExercises, reviewExercises, type ReviewItemView } from '../../shared/lesson.ts';
-import { buildSessionResult, gradeExercise } from '../../shared/scoring.ts';
+import { buildSessionResult, gradeExercise, wrongResponses } from '../../shared/scoring.ts';
 import {
   AskBodySchema,
   AskReplySchema,
@@ -36,6 +36,7 @@ import {
   dueItems,
   glossaryItem,
   itemKeyForExercise,
+  recordLearned,
   recordMiss,
   recordReviewResult,
   type ItemContent,
@@ -43,6 +44,7 @@ import {
 import type { LessonStudent } from '../lessons.ts';
 import { createPreparer } from '../prepared.ts';
 import { recordTaskTiming, taskTimings } from '../timings.ts';
+import { pickVideo } from '../videos.ts';
 import { getUserRow, parseId } from './users.ts';
 
 interface SessionRow {
@@ -64,11 +66,53 @@ interface SessionRow {
   novelty_json: string | null;
 }
 
-/** 暖身複習的題數上限,依課程長度而定。 */
-const REVIEW_LIMIT: Record<Minutes, number> = { 20: 5, 30: 6, 40: 8 };
+/**
+ * 暖身複習的題數上限,依課程長度而定:每堂新單字數(5 / 6 / 8)的 4 倍。
+ * 每個新單字之後至少要複習 4 次(1、4、16、64 天),所以每天上課的話,到期的題數大約就是新單字的 4 倍;
+ * 上限低於這個數字,複習會越積越多。超過上限的留在「回顧」頁的複習練習。
+ */
+const REVIEW_LIMIT: Record<Minutes, number> = { 20: 20, 30: 24, 40: 32 };
 
 /** 原本那堂課的編號:重上的課回傳它重上的對象,否則是自己。 */
 const rootId = (row: SessionRow): number => row.retake_of ?? row.id;
+
+/** 往回找幾堂課來取得「上次的流暢度成績」。 */
+const FLUENCY_LOOKBACK = 10;
+
+/**
+ * 課前流暢度練習要用的上一課:這位使用者在這堂課之前上完的最近一堂(不含重上的課,也不是這堂課重上的對象,
+ * 否則重溫的課文就是今天要上的那一篇)。同時附上最近一次有紀錄的成績,讓學生和自己比。
+ */
+function previousLesson(db: Db, row: SessionRow): SessionView['previous'] {
+  const earlier = db
+    .prepare(
+      `SELECT lesson_json FROM sessions
+       WHERE user_id = ? AND status = 'completed' AND retake_of IS NULL AND id < ? AND id != ?
+       ORDER BY id DESC LIMIT 1`,
+    )
+    .get(row.user_id, row.id, rootId(row)) as { lesson_json: string } | undefined;
+  if (!earlier) return null;
+  const lesson = JSON.parse(earlier.lesson_json) as Lesson;
+
+  const states = db
+    .prepare(`SELECT state_json FROM sessions WHERE user_id = ? AND status = 'completed' AND id < ? ORDER BY id DESC LIMIT ?`)
+    .all(row.user_id, row.id, FLUENCY_LOOKBACK) as unknown as { state_json: string }[];
+  const records = states.map((state) => SessionStateSchema.parse(JSON.parse(state.state_json)).fluency);
+  return {
+    title: lesson.title,
+    text: lesson.passage.text,
+    lastReadingWpm: records.find((record) => record.readingWpm !== null)?.readingWpm ?? null,
+    lastRetellWords: records.find((record) => record.retellWords !== null)?.retellWords ?? null,
+  };
+}
+
+/** 這是學生在這個等級上的第幾堂課(重上的課算它原本那一堂)。用來讓每堂課後建議的影片都不一樣。 */
+function lessonNumber(db: Db, row: SessionRow): number {
+  const counted = db
+    .prepare(`SELECT COUNT(*) AS n FROM sessions WHERE user_id = ? AND level = ? AND retake_of IS NULL AND status = 'completed' AND id <= ?`)
+    .get(row.user_id, row.level, rootId(row)) as { n: number };
+  return counted.n;
+}
 
 function toView(db: Db, row: SessionRow): SessionView {
   const retakes = db
@@ -91,6 +135,8 @@ function toView(db: Db, row: SessionRow): SessionView {
     retakeOf: row.retake_of,
     retakes: retakes.map((retake) => ({ ...retake })),
     novelty: row.novelty_json ? (JSON.parse(row.novelty_json) as LessonNovelty) : null,
+    previous: previousLesson(db, row),
+    video: row.status === 'completed' ? pickVideo(row.level, row.stage, lessonNumber(db, row)) : null,
   };
 }
 
@@ -422,6 +468,21 @@ export function sessionsRouter(db: Db, ai: AiProvider, options: SessionsOptions)
             miss: point.outcome,
             sessionId: id,
             date: today,
+            responses: wrongResponses(exercise.exercise, state.answers[exercise.key]),
+          });
+        }
+
+        // 第一次就答對的新單字也要進入間隔複習:當下答對不代表之後還記得。
+        const weakKeys = new Set(result.weakPoints.map((point) => point.key));
+        for (const exercise of exercisesByKey.values()) {
+          if (exercise.kind !== 'vocab' || weakKeys.has(exercise.key)) continue;
+          recordLearned(db, {
+            userId: row.user_id,
+            kind: 'vocab',
+            itemKey: itemKeyForExercise(exercise, rootId(row)),
+            content: contentForExercise(exercise),
+            sessionId: id,
+            date: today,
           });
         }
 
@@ -429,7 +490,8 @@ export function sessionsRouter(db: Db, ai: AiProvider, options: SessionsOptions)
         const reviewItems = reviewExercises(review);
         review.forEach((item, index) => {
           const exercise = reviewItems[index]!;
-          recordReviewResult(db, item.id, gradeExercise(exercise.exercise, state.answers[exercise.key]).outcome, id, today);
+          const answer = state.answers[exercise.key];
+          recordReviewResult(db, item.id, gradeExercise(exercise.exercise, answer).outcome, id, today, wrongResponses(exercise.exercise, answer));
         });
       });
 

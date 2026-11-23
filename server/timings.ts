@@ -7,7 +7,7 @@ import type { Db } from './db.ts';
 export type TimedTask = keyof TaskTimings;
 
 /** 還沒有任何紀錄時使用的預估秒數。來自 2026-11-20 的實測:產生一堂課 40–79 秒。 */
-const DEFAULT_SECONDS: TaskTimings = { lesson: 60, grade: 30 };
+const DEFAULT_SECONDS: TaskTimings = { lesson: 60, grade: 30, placement: 60 };
 
 /** 新的一筆時間佔多少比重。用移動平均,換了模型或設定之後預估會跟著調整,不會被很久以前的紀錄拖住。 */
 const NEW_SAMPLE_WEIGHT = 0.3;
@@ -29,5 +29,5 @@ export function expectedSeconds(db: Db, task: TimedTask): number {
 }
 
 export function taskTimings(db: Db): TaskTimings {
-  return { lesson: expectedSeconds(db, 'lesson'), grade: expectedSeconds(db, 'grade') };
+  return { lesson: expectedSeconds(db, 'lesson'), grade: expectedSeconds(db, 'grade'), placement: expectedSeconds(db, 'placement') };
 }

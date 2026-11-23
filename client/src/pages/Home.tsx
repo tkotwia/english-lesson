@@ -3,7 +3,6 @@ import { Link } from 'react-router';
 import type { ProgressSummary } from '../../../shared/api.ts';
 import { STAGE_LABELS, type SessionView } from '../../../shared/schema.ts';
 import { api, errorMessage } from '../api.ts';
-import { LevelUpBanner } from '../components/LevelUpBanner.tsx';
 import { useActiveUser } from '../userContext.tsx';
 
 export function Home() {
@@ -37,7 +36,6 @@ export function Home() {
       </p>
 
       {error && <p className="alert alert-error">{error}</p>}
-      {progress?.suggestion && <LevelUpBanner suggestion={progress.suggestion} onDecided={load} />}
 
       {!user.hasApiKey && (
         <div className="alert alert-warn">

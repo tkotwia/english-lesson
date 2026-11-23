@@ -70,26 +70,33 @@ CREATE TABLE IF NOT EXISTS item_events (
   item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
   session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
   date TEXT NOT NULL,
-  result TEXT NOT NULL
+  result TEXT NOT NULL,
+  responses_json TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_item_events_date ON item_events (item_id, date);
+
+-- 分級測驗:備好還沒用的(ready)、作答中的(in_progress)與做完的(completed)都在這張表。
+CREATE TABLE IF NOT EXISTS placement_tests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  source TEXT NOT NULL,
+  status TEXT NOT NULL,
+  test_json TEXT NOT NULL,
+  answers_json TEXT,
+  level_before TEXT,
+  recommended TEXT,
+  bands_json TEXT,
+  local_date TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_placement_tests_user ON placement_tests (user_id, status);
 
 CREATE TABLE IF NOT EXISTS task_timings (
   task TEXT PRIMARY KEY,
   average_ms REAL NOT NULL,
   samples INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS level_decisions (
-  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  month TEXT NOT NULL,
-  average REAL NOT NULL,
-  from_level TEXT NOT NULL,
-  to_level TEXT NOT NULL,
-  decision TEXT NOT NULL,
-  decided_at TEXT NOT NULL DEFAULT (datetime('now')),
-  PRIMARY KEY (user_id, month)
 );
 `;
 
@@ -106,6 +113,8 @@ export function openDb(path: string): Db {
   ensureColumn(db, 'sessions', 'grammar_point', 'TEXT');
   ensureColumn(db, 'sessions', 'novelty_json', 'TEXT');
   ensureColumn(db, 'api_usage', 'total_ms', 'INTEGER NOT NULL DEFAULT 0');
+  // 學生答錯時的作答內容(JSON 陣列)。NULL 表示較早版本留下的紀錄,當時沒有存。
+  ensureColumn(db, 'item_events', 'responses_json', 'TEXT');
   return db;
 }
 

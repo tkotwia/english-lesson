@@ -6,7 +6,7 @@ interface RecognitionResultEvent {
   results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }>;
 }
 
-interface Recognition {
+export interface Recognition {
   lang: string;
   interimResults: boolean;
   continuous: boolean;
@@ -19,7 +19,7 @@ interface Recognition {
   abort(): void;
 }
 
-type RecognitionConstructor = new () => Recognition;
+export type RecognitionConstructor = new () => Recognition;
 
 function recognitionConstructor(): RecognitionConstructor | undefined {
   if (typeof window === 'undefined') return undefined;
@@ -42,7 +42,7 @@ export function sttErrorMessage(code: string): string {
 export interface ListenHandlers {
   /** 辨識過程中不斷更新的文字,用來即時顯示。 */
   onText: (text: string) => void;
-  /** 說完一句話(或手動停止)後的最終文字;沒聽到任何內容時是空字串。 */
+  /** 學生按下「說完了」(或太久沒有聲音)之後的最終文字;沒聽到任何內容時是空字串。 */
   onEnd: (finalText: string) => void;
   onError: (code: string) => void;
 }
@@ -51,42 +51,100 @@ export interface Listening {
   stop: () => void;
 }
 
-/** 開始聽一句英文。學生停頓後會自動結束,也可以呼叫 stop() 提早結束。 */
-export function listen(handlers: ListenHandlers): Listening {
-  const Constructor = recognitionConstructor();
+/** 這麼久都沒有聽到新的內容,就當作學生忘了按結束,自動收尾並放開麥克風。 */
+export const SILENCE_LIMIT_MS = 30_000;
+
+/**
+ * 開始聽學生說英文,一直聽到呼叫 stop() 為止。
+ *
+ * 學生中途停頓不算說完:唸一個長句子時常常會停下來想,這時如果就結束,
+ * 只唸到一半的句子會被當成一次作答(跟讀只有兩次機會)。所以:
+ * - 用連續辨識,停頓時不結束;
+ * - 瀏覽器仍然自己結束時(安靜了一陣子、單次辨識的時間上限),把已經聽到的留著,接著再聽。
+ */
+export function listen(handlers: ListenHandlers, Constructor: RecognitionConstructor | undefined = recognitionConstructor()): Listening {
   if (!Constructor) {
     handlers.onError('service-not-allowed');
     return { stop: () => {} };
   }
-  const recognition = new Constructor();
-  recognition.lang = 'en-US';
-  recognition.interimResults = true;
-  recognition.continuous = false;
-  recognition.maxAlternatives = 1;
 
-  let finalText = '';
-  let failed = false;
-  recognition.onresult = (event) => {
-    let interim = '';
-    for (let i = event.resultIndex; i < event.results.length; i++) {
-      const result = event.results[i]!;
-      if (result.isFinal) finalText += `${result[0].transcript} `;
-      else interim += result[0].transcript;
-    }
-    handlers.onText(`${finalText}${interim}`.trim());
-  };
-  recognition.onerror = (event) => {
-    failed = true;
-    handlers.onError(event.error);
-  };
-  recognition.onend = () => {
-    if (!failed) handlers.onEnd(finalText.trim());
-  };
+  /** 前幾段辨識(已經結束)聽到的文字。 */
+  let earlier = '';
+  /** 目前這一段辨識聽到的文字:已經確定的,以及還在猜的。 */
+  let confirmed = '';
+  let tentative = '';
+  let stopping = false;
+  let finished = false;
+  let recognition: Recognition | null = null;
+  let silenceTimer: ReturnType<typeof setTimeout> | undefined;
 
-  try {
-    recognition.start();
-  } catch {
-    handlers.onError('aborted');
+  const heard = () => `${earlier} ${confirmed} ${tentative}`.replace(/\s+/g, ' ').trim();
+
+  function close(report: () => void) {
+    if (finished) return;
+    finished = true;
+    clearTimeout(silenceTimer);
+    report();
   }
-  return { stop: () => recognition.stop() };
+
+  function stop() {
+    if (finished || stopping) return;
+    stopping = true;
+    recognition?.stop();
+  }
+
+  function watchSilence() {
+    clearTimeout(silenceTimer);
+    silenceTimer = setTimeout(stop, SILENCE_LIMIT_MS);
+  }
+
+  function begin() {
+    const current = new Constructor!();
+    recognition = current;
+    current.lang = 'en-US';
+    current.interimResults = true;
+    current.continuous = true;
+    current.maxAlternatives = 1;
+
+    current.onresult = (event) => {
+      if (finished) return;
+      // 每次都從這一段的全部結果重新整理,不依賴事件只回報一次。
+      confirmed = '';
+      tentative = '';
+      for (let i = 0; i < event.results.length; i++) {
+        const result = event.results[i]!;
+        if (result.isFinal) confirmed += `${result[0].transcript} `;
+        else tentative += result[0].transcript;
+      }
+      handlers.onText(heard());
+      watchSilence();
+    };
+    current.onerror = (event) => {
+      // 一陣子沒聲音不是錯誤:學生可能還在想。接下來的 onend 會接著再聽。
+      if (event.error === 'no-speech') return;
+      close(() => handlers.onError(event.error));
+    };
+    current.onend = () => {
+      if (finished || recognition !== current) return;
+      if (stopping) {
+        close(() => handlers.onEnd(heard()));
+        return;
+      }
+      // 瀏覽器自己結束了,但學生還沒說完:留著已經聽到的,再開一段接著聽。
+      earlier = heard();
+      confirmed = '';
+      tentative = '';
+      begin();
+    };
+
+    try {
+      current.start();
+    } catch {
+      close(() => handlers.onError('aborted'));
+    }
+  }
+
+  watchSilence();
+  begin();
+  return { stop };
 }
