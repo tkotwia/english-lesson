@@ -4,7 +4,6 @@ import { createLiveVoice, createProvider, createSpeechVoice, geminiOptionsFromEn
 import { createApp } from './app.ts';
 import { openDb } from './db.ts';
 import { backfillResponses } from './items.ts';
-import { LESSON_MINUTES } from '../shared/schema.ts';
 
 if (existsSync('.env')) process.loadEnvFile('.env');
 
@@ -12,12 +11,8 @@ const port = Number(process.env.PORT ?? 3210);
 const dataDir = resolve(process.env.DATA_DIR ?? './data');
 const dbPath = join(dataDir, 'english.db');
 const isProduction = process.env.NODE_ENV === 'production';
-// 預設開啟預先備課;在 .env 設 AI_PREPARE_NEXT=off 可以關掉(每次按開始時才現場產生)。
+// 預設開啟預先備課;在 .env 設 AI_PREPARE_NEXT=off 可以關掉(下一堂課要學生自己按「備課」才準備)。
 const prepareAhead = (process.env.AI_PREPARE_NEXT ?? 'on').trim().toLowerCase() !== 'off';
-// 背景要備哪些長度的課。預設三種都備;只想省額度的話,可以設成例如 AI_PREPARE_MINUTES=20。
-const requestedMinutes = (process.env.AI_PREPARE_MINUTES ?? '').split(',').map((value) => Number(value.trim()));
-const chosenMinutes = LESSON_MINUTES.filter((minutes) => requestedMinutes.includes(minutes));
-const prepareMinutes = chosenMinutes.length > 0 ? chosenMinutes : LESSON_MINUTES;
 
 const db = openDb(dbPath);
 const backfilled = backfillResponses(db);
@@ -29,7 +24,6 @@ const app = createApp({
   ai,
   staticDir: isProduction ? resolve('dist/client') : undefined,
   prepareAhead,
-  prepareMinutes,
   live: createLiveVoice(process.env),
   speech: speech ? { voice: speech, dir: join(dataDir, 'audio') } : undefined,
 });
@@ -45,7 +39,7 @@ app.listen(port, '127.0.0.1', () => {
     );
   }
   console.log(`[server] 聽力音檔:${speech ? `用語音合成事先唸好(${speech.models.join(' → ')}),還沒做好或額度用完時由瀏覽器朗讀` : '不使用,由瀏覽器朗讀'}`);
-  console.log(`[server] 預先備課:${prepareAhead ? `開啟(上課時在背景準備 ${prepareMinutes.join('、')} 分鐘的課)` : '關閉'};每個等級的第一堂 20 分鐘課使用內建的起始課`);
+  console.log(`[server] 預先備課:${prepareAhead ? '開啟(上課時在背景準備下一堂課)' : '關閉(要按「備課」才準備下一堂課)'};每個等級的第一堂課使用內建的起始課`);
   if (isProduction) {
     console.log(`[server] 請用 Chrome 開啟 http://localhost:${port}`);
   } else {

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { ReviewItemView } from './lesson.ts';
 import { PlacementAnswersSchema, type BandResult, type PlacementTest } from './placement.ts';
-import { ExerciseAnswerSchema, type Level, type Outcome, type RetakeSummary, type SectionResult } from './schema.ts';
+import { ExerciseAnswerSchema, type Level, type Minutes, type Outcome, type RetakeSummary, type SectionResult } from './schema.ts';
 import type { ItemStatus } from './srs.ts';
 
 // 日曆、進度與回顧相關 API 的請求與回應格式。
@@ -46,20 +46,16 @@ export interface ReviewListItem extends ReviewItemView {
   wrongAnswers: string[];
 }
 
-/** 某一種課程長度現在能不能馬上開始。 */
-export interface LengthStatus {
-  minutes: 20 | 30 | 40;
-  /** ready:可以馬上開始;preparing:背景正在準備或已經排定要準備這一堂;none:按開始後才會請老師現場備課。 */
-  state: 'ready' | 'preparing' | 'none';
-  /** 可以馬上開始的原因:prepared 是背景備好的課,starter 是內建的起始課。 */
-  source: 'prepared' | 'starter' | null;
-  /** 現在按開始,預估要等幾秒(由過去實際花費的時間推估);可以馬上開始時是 0。 */
-  waitSeconds: number;
-}
-
-/** 這位使用者在目前的等級與學習階段下,各種課程長度的準備狀況。 */
+/** 這位使用者在目前的等級與學習階段下,下一堂課準備得怎麼樣。 */
 export interface PreparedStatus {
-  lengths: LengthStatus[];
+  /** 下一堂課的長度:依學習階段固定;內建的起始課是 20 分鐘的份量。 */
+  minutes: Minutes;
+  /** ready:可以馬上開始;preparing:老師正在備這一堂;none:還沒備好,要按「備課」。 */
+  state: 'ready' | 'preparing' | 'none';
+  /** 可以馬上開始的原因:prepared 是備好的課,starter 是內建的起始課。 */
+  source: 'prepared' | 'starter' | null;
+  /** 現在開始備課(或等正在備的那一堂做完),預估要等幾秒(由過去實際花費的時間推估);可以馬上開始時是 0。 */
+  waitSeconds: number;
 }
 
 /** 等待 AI 時的預估秒數,用來畫進度條。由過去實際花費的時間推估。 */

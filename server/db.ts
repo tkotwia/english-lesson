@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { STAGE_MINUTES } from '../shared/schema.ts';
 
 export type Db = DatabaseSync;
 
@@ -108,6 +109,7 @@ export function openDb(path: string): Db {
   if (path !== ':memory:') db.exec('PRAGMA journal_mode = WAL;');
   db.exec(SCHEMA);
   migratePreparedLessons(db);
+  dropUnusedPreparedLessons(db);
   // 較早版本建立的資料庫沒有這些欄位;補上欄位,原有的資料不變。
   ensureColumn(db, 'sessions', 'retake_of', 'INTEGER REFERENCES sessions(id) ON DELETE SET NULL');
   ensureColumn(db, 'sessions', 'grammar_point', 'TEXT');
@@ -134,6 +136,20 @@ CREATE TABLE prepared_lessons (
   PRIMARY KEY (user_id, level, stage, minutes)
 );
 `;
+
+/**
+ * 啟動時清掉不會再被取用的備好的課。留著的話,程式還會替它們製作、保留聽力音檔,白白用掉額度與空間。
+ * 備好的課只是庫存,不是上課紀錄。
+ * - 長度不符的:課程長度現在依學習階段固定(STAGE_MINUTES),以前可以自己選長度時備的其他長度已經用不到。
+ * - 學習階段不符的:使用者已經改到別的學習階段(升學,或更正設定),替原本階段備的課不會再上。
+ * 替別的「等級」備的課不清:切到別的等級看看再切回來很常見,切回來時可以直接上。
+ */
+function dropUnusedPreparedLessons(db: Db): void {
+  for (const [stage, minutes] of Object.entries(STAGE_MINUTES)) {
+    db.prepare('DELETE FROM prepared_lessons WHERE stage = ? AND minutes != ?').run(stage, minutes);
+  }
+  db.exec('DELETE FROM prepared_lessons WHERE stage != (SELECT stage FROM users WHERE users.id = prepared_lessons.user_id)');
+}
 
 /**
  * 建立預先備課的資料表。較早的版本每位使用者只存一堂(主鍵只有 user_id);

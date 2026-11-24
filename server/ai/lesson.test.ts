@@ -64,6 +64,23 @@ describe('等級與學習階段', () => {
     expect(long.passageWords[1]).toBeGreaterThan(short.passageWords[1]);
   });
 
+  // 每堂課教幾個新單字是照研究定的(每堂 5–8 個)。25 分鐘是國中的長度,新單字和 30 分鐘一樣是 6 個,不因為課短一點就少教。
+  it('每堂課的新單字:20 分鐘 5 個,25 與 30 分鐘 6 個', () => {
+    expect(([20, 25, 30] as const).map((minutes) => lessonSize('A2', minutes).vocab)).toEqual([5, 6, 6]);
+  });
+
+  it('25 分鐘的課:課文長度與題目總數介於 20 與 30 分鐘之間', () => {
+    const total = (minutes: 20 | 25 | 30) => {
+      const { passageWords: _passage, ...counts } = lessonSize('B1', minutes);
+      return Object.values(counts).reduce((sum, count) => sum + count, 0);
+    };
+    const longest = (minutes: 20 | 25 | 30) => lessonSize('B1', minutes).passageWords[1];
+    expect(total(25)).toBeGreaterThan(total(20));
+    expect(total(25)).toBeLessThan(total(30));
+    expect(longest(25)).toBeGreaterThan(longest(20));
+    expect(longest(25)).toBeLessThan(longest(30));
+  });
+
   // 中文輔助隨等級遞減:低等級需要中文解釋,高等級全英文才有挑戰性。
   it('A1–A2 用中文解釋,B1 中英並用,B2 以上全英文', () => {
     expect(LEVELS.map((level) => LEVEL_GUIDES[level].zhSupport)).toEqual(['full', 'full', 'partial', 'none', 'none', 'none']);

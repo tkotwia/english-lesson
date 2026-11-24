@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
-import type { LengthStatus, PreparedStatus } from '../../../shared/api.ts';
-import { LESSON_MINUTES, type Level, type Minutes, type SessionView } from '../../../shared/schema.ts';
+import type { PreparedStatus } from '../../../shared/api.ts';
+import { STAGE_MINUTES, type Level, type SessionView, type Stage } from '../../../shared/schema.ts';
 import { formatSeconds } from '../../../shared/wait.ts';
 import { api, errorCode, errorDetail, errorMessage } from '../api.ts';
 import { WaitProgress } from '../components/WaitProgress.tsx';
@@ -40,35 +40,32 @@ export function Lesson() {
   return <LessonPlayer key={session.id} session={session} onAbandoned={() => setSession(null)} />;
 }
 
-const MINUTES_HINT: Record<Minutes, string> = { 20: '精簡', 30: '標準', 40: '加強' };
-
-/** 還沒自己選過長度時的預設:先挑可以馬上開始的,依這個順序;都不能馬上開始就選標準的 30 分鐘。 */
-const DEFAULT_ORDER: readonly Minutes[] = [30, 20, 40];
-
 /** 查不到備課狀態時用的預估等待秒數(與伺服器沒有紀錄時的預設值相同)。 */
 const FALLBACK_WAIT_SECONDS = 60;
+/** 老師正在背景備課時,多久再問一次備好了沒。 */
+const PREPARING_POLL_MS = 3000;
 
-/** 選定的長度現在是什麼狀況、按下開始會怎樣。 */
-function describeLength(length: LengthStatus | undefined, level: Level): string {
-  if (!length) return `按「開始」後,${TEACHER_NAME}會依你的等級(${level})備課。`;
-  if (length.source === 'starter') return `這是 ${level} 的起始課(內建的第一堂 ${length.minutes} 分鐘課),按「開始」馬上上課,不用等。`;
-  if (length.state === 'ready') return `這堂 ${level} 的 ${length.minutes} 分鐘課已經備好,按「開始」馬上上課,不用等。`;
-  if (length.state === 'preparing') {
-    return `${TEACHER_NAME}正在背景準備這堂課。現在按「開始」預估要等 ${formatSeconds(length.waitSeconds)};也可以等它顯示「已備好」再開始。`;
+/** 下一堂課現在是什麼狀況、接下來要按什麼。 */
+function describeNext(status: PreparedStatus | null, level: Level, stage: Stage): string {
+  if (!status) return `按「開始」後,${TEACHER_NAME}會依你的等級(${level})備課。`;
+  if (status.source === 'starter') {
+    const later = STAGE_MINUTES[stage] === status.minutes ? '' : `之後的課是 ${STAGE_MINUTES[stage]} 分鐘。`;
+    return `這是 ${level} 的起始課(內建的第一堂課,${status.minutes} 分鐘的份量),按「開始」馬上上課,不用等。${later}`;
   }
-  return `${length.minutes} 分鐘還沒有備好的課。按「開始」後${TEACHER_NAME}會現場備課,預估要等 ${formatSeconds(length.waitSeconds)}。`;
+  if (status.state === 'ready') return `這堂 ${level} 的課已經備好,按「開始」馬上上課,不用等。`;
+  if (status.state === 'preparing') return `${TEACHER_NAME}正在準備下一堂課,備好就可以開始。`;
+  return `下一堂課還沒有備好。按「備課」請 ${TEACHER_NAME}準備,預估要等 ${formatSeconds(status.waitSeconds)};備好之後就可以開始。`;
 }
 
 function StartPanel({ onStarted }: { onStarted: (session: SessionView) => void }) {
   const user = useActiveUser();
-  const [minutes, setMinutes] = useState<Minutes>(30);
-  // 按下開始之後預估要等幾秒;null 表示還沒按。0 表示課已經備好,不需要進度條。
-  const [waitSeconds, setWaitSeconds] = useState<number | null>(null);
-  const [error, setError] = useState<{ message: string; detail?: string; quota: boolean } | null>(null);
-  // 各種長度的課有沒有備好;備好的可以馬上開始。
+  // 下一堂課備好了沒;null 表示還不知道(剛進來,或查不到)。
   const [prepared, setPrepared] = useState<PreparedStatus | null>(null);
-  const pickedDefault = useRef(false);
-  const starting = waitSeconds !== null;
+  // 按了按鈕之後正在等什麼,以及預估要等幾秒(0 表示不需要進度條)。
+  const [waiting, setWaiting] = useState<{ what: 'starting' | 'preparing'; seconds: number } | null>(null);
+  // 老師在背景備課時,第一次看到的預估秒數;進度條從那時起算,不隨之後每次詢問重來。
+  const [backgroundSeconds, setBackgroundSeconds] = useState<number | null>(null);
+  const [error, setError] = useState<{ message: string; detail?: string; quota: boolean } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -79,11 +76,12 @@ function StartPanel({ onStarted }: { onStarted: (session: SessionView) => void }
         .then((status) => {
           if (cancelled) return;
           setPrepared(status);
-          // 背景還在準備時,隔幾秒再問一次,備好了畫面就會更新。
-          if (status.lengths.some((length) => length.state === 'preparing')) timer = window.setTimeout(load, 3000);
+          setBackgroundSeconds((current) => (status.state === 'preparing' ? (current ?? status.waitSeconds) : null));
+          // 背景還在準備時,隔幾秒再問一次,備好了畫面就會換成「開始」。
+          if (status.state === 'preparing') timer = window.setTimeout(load, PREPARING_POLL_MS);
         })
         .catch(() => {
-          // 查不到備課狀態不影響開課,最多就是現場備課。
+          // 查不到備課狀態不影響開課:畫面照樣給「開始」,最多就是現場備課。
         });
     };
     load();
@@ -93,70 +91,64 @@ function StartPanel({ onStarted }: { onStarted: (session: SessionView) => void }
     };
   }, [user.id, user.level, user.stage]);
 
-  // 第一次拿到備課狀態時,預設選一個可以馬上開始的長度。只做一次,之後不會自己跳到別的選項。
-  useEffect(() => {
-    if (!prepared || pickedDefault.current) return;
-    pickedDefault.current = true;
-    const ready = DEFAULT_ORDER.find((value) => prepared.lengths.some((length) => length.minutes === value && length.state === 'ready'));
-    if (ready) setMinutes(ready);
-  }, [prepared]);
-
-  const statusOf = (value: Minutes) => prepared?.lengths.find((length) => length.minutes === value);
-  const selected = statusOf(minutes);
+  const failed = (err: unknown) => setError({ message: errorMessage(err), detail: errorDetail(err), quota: errorCode(err) === 'quota' });
 
   async function start() {
-    setWaitSeconds(selected ? selected.waitSeconds : FALLBACK_WAIT_SECONDS);
+    setWaiting({ what: 'starting', seconds: prepared ? prepared.waitSeconds : FALLBACK_WAIT_SECONDS });
     setError(null);
     try {
-      onStarted(await api.startSession(user.id, minutes));
+      onStarted(await api.startSession(user.id));
     } catch (err) {
-      setError({ message: errorMessage(err), detail: errorDetail(err), quota: errorCode(err) === 'quota' });
-      setWaitSeconds(null);
+      failed(err);
+      setWaiting(null);
     }
   }
+
+  async function prepare() {
+    setWaiting({ what: 'preparing', seconds: prepared?.waitSeconds || FALLBACK_WAIT_SECONDS });
+    setError(null);
+    try {
+      setPrepared(await api.prepareLesson(user.id));
+    } catch (err) {
+      failed(err);
+    } finally {
+      setWaiting(null);
+    }
+  }
+
+  const minutes = prepared?.minutes ?? STAGE_MINUTES[user.stage];
+  // 按了「備課」之後,說明文字也要跟著變成「正在準備」,不再叫學生去按備課。
+  const shown: PreparedStatus | null = prepared && waiting?.what === 'preparing' ? { ...prepared, state: 'preparing' } : prepared;
+  // 進度條要顯示的預估秒數:自己按了按鈕在等,或老師正在背景備課。
+  const progressSeconds = waiting ? waiting.seconds : prepared?.state === 'preparing' ? backgroundSeconds : null;
 
   return (
     <section className="page">
       <h1>開始上課</h1>
       <div className="card narrow">
-        <h2>這堂課要上多久?</h2>
-        <div className="choice-row" role="radiogroup" aria-label="課程長度">
-          {LESSON_MINUTES.map((value) => (
-            <button
-              key={value}
-              type="button"
-              role="radio"
-              aria-checked={minutes === value}
-              className={`choice${minutes === value ? ' is-selected' : ''}`}
-              onClick={() => {
-                setMinutes(value);
-                // 自己選過之後,就不再替他改成預設的長度。
-                pickedDefault.current = true;
-              }}
-              disabled={starting}
-            >
-              <strong>{value} 分鐘</strong>
-              <small>{MINUTES_HINT[value]}</small>
-              {statusOf(value)?.state === 'ready' && <span className="tag tag-mastered">已備好</span>}
-              {statusOf(value)?.state === 'preparing' && <span className="tag">準備中</span>}
-            </button>
-          ))}
-        </div>
-        <p className="muted prepared-note">
-          {describeLength(selected, user.level)} 開始上課後,{TEACHER_NAME}會在背景把之後各種長度的課先備好。
-        </p>
+        <h2>下一堂課:{minutes} 分鐘</h2>
+        <p className="muted prepared-note">{describeNext(shown, user.level, user.stage)}</p>
 
         {!user.hasApiKey ? (
           <p className="alert alert-warn">
             還沒有設定 Google API key,無法上新課。<Link to="/settings">前往設定</Link>
           </p>
+        ) : waiting?.what === 'preparing' || (!waiting && prepared?.state === 'preparing') ? (
+          <button type="button" className="button button-primary button-large" disabled>
+            {TEACHER_NAME}正在備課…
+          </button>
+        ) : prepared?.state === 'none' ? (
+          <button type="button" className="button button-primary button-large" onClick={prepare}>
+            備課
+          </button>
         ) : (
-          <button type="button" className="button button-primary button-large" onClick={start} disabled={starting}>
-            {!starting ? '開始' : waitSeconds > 0 ? `${TEACHER_NAME}正在備課…` : '正在開始…'}
+          <button type="button" className="button button-primary button-large" onClick={start} disabled={waiting !== null}>
+            {!waiting ? '開始' : waiting.seconds > 0 ? `${TEACHER_NAME}正在備課…` : '正在開始…'}
           </button>
         )}
 
-        {starting && waitSeconds > 0 && <WaitProgress expectedSeconds={waitSeconds} />}
+        {progressSeconds !== null && progressSeconds > 0 && <WaitProgress expectedSeconds={progressSeconds} />}
+        <p className="muted small">課程長度依學習階段固定:國小 20 分鐘、國中 25 分鐘、高中與大學 30 分鐘。</p>
 
         {error && (
           <div className="alert alert-error">

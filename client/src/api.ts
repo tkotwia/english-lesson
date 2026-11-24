@@ -20,7 +20,6 @@ import type {
   ExerciseAnswer,
   KeyTestResult,
   Level,
-  Minutes,
   NewUser,
   Outcome,
   PublicUser,
@@ -78,7 +77,9 @@ export const api = {
   getStatus: (userId: number) => request<SettingsStatus>('GET', `/settings/status?userId=${userId}`),
 
   currentSession: (userId: number) => request<SessionView | null>('GET', `/sessions/current?userId=${userId}`),
-  startSession: (userId: number, minutes: Minutes) => request<SessionView>('POST', '/sessions', { userId, minutes }),
+  startSession: (userId: number) => request<SessionView>('POST', '/sessions', { userId }),
+  /** 「備課」:請老師把下一堂課備好;備好才回應。 */
+  prepareLesson: (userId: number) => request<PreparedStatus>('POST', '/sessions/prepare', { userId }),
   getSession: (id: number) => request<SessionView>('GET', `/sessions/${id}`),
   saveSessionState: (id: number, state: SessionState) => request<void>('PUT', `/sessions/${id}/state`, state),
   completeSession: (id: number, state: SessionState) => request<SessionView>('POST', `/sessions/${id}/complete`, { state }),

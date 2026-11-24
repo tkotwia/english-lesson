@@ -2,7 +2,7 @@ import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { FLASHCARD_KNOWN, lessonExercises, type Exercise } from '../shared/lesson.ts';
-import { CHAT_TURNS, MAX_ASKS, SessionStateSchema, type ExerciseAnswer, type SessionState, type SessionView } from '../shared/schema.ts';
+import { CHAT_TURNS, MAX_ASKS, SessionStateSchema, type ExerciseAnswer, type SessionState, type SessionView, type Stage } from '../shared/schema.ts';
 import { createMockProvider } from './ai/mock.ts';
 import { MOCK_FIXTURES } from './ai/mockData.ts';
 import type { AiJsonRequest, AiProvider } from './ai/provider.ts';
@@ -30,7 +30,8 @@ function spyProvider(): AiProvider {
 beforeEach(async () => {
   requests = [];
   db = openDb(':memory:');
-  const app = createApp({ db, ai: spyProvider() });
+  // 這裡測的是「請 AI 產生課程」之後的流程,所以不用內建的起始課(否則第一堂課會是起始課)。
+  const app = createApp({ db, ai: spyProvider(), starters: false });
   server = await new Promise<Server>((done) => {
     const listening = app.listen(0, '127.0.0.1', () => done(listening));
   });
@@ -54,10 +55,11 @@ async function call(method: string, path: string, body?: unknown): Promise<{ sta
 
 const SECRET_NAME = '王小明獨特名字';
 
-async function startLesson(minutes: 20 | 30 | 40 = 30): Promise<SessionView> {
-  const user = (await call('POST', '/users', { name: SECRET_NAME, stage: 'junior' })).json;
+/** 開一堂課。課程長度由學習階段決定:國小 20、國中 25、高中 30 分鐘。 */
+async function startLesson(stage: Stage = 'junior'): Promise<SessionView> {
+  const user = (await call('POST', '/users', { name: SECRET_NAME, stage, level: 'A2' })).json;
   await call('PUT', `/users/${user.id}/api-key`, { apiKey: 'key' });
-  return (await call('POST', '/sessions', { userId: user.id, minutes })).json;
+  return (await call('POST', '/sessions', { userId: user.id })).json;
 }
 
 function correctResponse(exercise: Exercise): string {
@@ -115,16 +117,19 @@ describe('情境對話', () => {
 
   // 輪數上限同時也是額度上限:對話類呼叫每堂課不能無限增加。
   it('學生可以說的輪數依課程長度而定,用完就不能再說', async () => {
-    for (const minutes of [20, 30, 40] as const) {
-      const session = await startLesson(minutes);
-      await talk(session, CHAT_TURNS[minutes]);
+    const turns: Record<string, number> = {};
+    for (const stage of ['elementary', 'junior', 'senior'] as const) {
+      const session = await startLesson(stage);
+      turns[session.minutes] = CHAT_TURNS[session.minutes];
+      await talk(session, CHAT_TURNS[session.minutes]);
       const extra = await say(session, 'One more?');
-      expect(extra.status, `${minutes} 分鐘`).toBe(409);
+      expect(extra.status, `${session.minutes} 分鐘`).toBe(409);
     }
+    expect(turns).toEqual({ 20: 5, 25: 5, 30: 6 });
   });
 
   it('最後一輪會告訴 AI 收尾', async () => {
-    const session = await startLesson(20);
+    const session = await startLesson('elementary');
     await talk(session, CHAT_TURNS[20]);
     const chatRequests = requests.filter((r) => r.task === 'chat');
     expect(chatRequests.at(-1)!.text).toContain("student's last turn");
@@ -182,14 +187,14 @@ describe('免費額度的用量', () => {
     expect(tierOf).toEqual({ lesson: 'quality', grade: 'quality', chat: 'chat', ask: 'chat' });
   });
 
-  it('一堂課做滿對話與問老師:品質類 2 次,對話類不超過 13 次', async () => {
-    const session = await startLesson(40);
-    await talk(session, CHAT_TURNS[40]);
+  it('最長的課(30 分鐘)做滿對話與問老師:品質類 2 次,對話類 11 次(對話 6 輪 + 問老師 5 次)', async () => {
+    const session = await startLesson('senior');
+    await talk(session, CHAT_TURNS[30]);
     for (let i = 0; i < MAX_ASKS; i++) await call('POST', `/sessions/${session.id}/ask`, { question: `q${i}` });
     await complete(session);
 
     expect(requests.filter((r) => r.tier === 'quality')).toHaveLength(2);
-    expect(requests.filter((r) => r.tier === 'chat')).toHaveLength(13);
+    expect(requests.filter((r) => r.tier === 'chat')).toHaveLength(11);
   });
 
   it('寫作與對話合併成一次批改', async () => {
@@ -258,7 +263,7 @@ describe('六個階段的計分', () => {
     const noListening = await complete(session, { capabilities: { tts: false, stt: true }, chatUnavailable: true });
     expect(Object.keys(sectionPercents(noListening))).toEqual(['reading', 'language', 'speaking', 'writing']);
 
-    const second = (await call('POST', '/sessions', { userId: session.userId, minutes: 30 })).json as SessionView;
+    const second = (await call('POST', '/sessions', { userId: session.userId })).json as SessionView;
     const nothing = await complete(second, { capabilities: { tts: false, stt: false }, chatUnavailable: true });
     expect(Object.keys(sectionPercents(nothing))).toEqual(['reading', 'language', 'writing']);
   });

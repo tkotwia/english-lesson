@@ -208,9 +208,15 @@ export type Grade = z.infer<typeof GradeSchema>;
 
 // ---- 上課進度與結果 ----
 
-export const LESSON_MINUTES = [20, 30, 40] as const;
-export const MinutesSchema = z.union([z.literal(20), z.literal(30), z.literal(40)]);
+/** 一堂課的長度(分鐘)。40 分鐘只出現在以前上過的課(那時可以自己選長度);重上時沿用原本的長度。 */
+export const MinutesSchema = z.union([z.literal(20), z.literal(25), z.literal(30), z.literal(40)]);
 export type Minutes = z.infer<typeof MinutesSchema>;
+
+/**
+ * 新課的長度依學習階段固定,不讓學生自己選:年紀越小,能專心的時間越短;
+ * 而且每天一堂、長度固定,每天到期的複習份量才會穩定。
+ */
+export const STAGE_MINUTES: Record<Stage, Minutes> = { elementary: 20, junior: 25, senior: 30, university: 30 };
 
 /** 老師在對話中對學生某句話的糾正。 */
 export const CorrectionSchema = z.object({
@@ -242,7 +248,7 @@ export const ChatBodySchema = z.object({ message: z.string().trim().min(1, '請�
 export const AskBodySchema = z.object({ question: z.string().trim().min(1, '請輸入問題').max(300) });
 
 /** 情境對話中學生要說幾輪,依課程長度而定。 */
-export const CHAT_TURNS: Record<20 | 30 | 40, number> = { 20: 5, 30: 6, 40: 8 };
+export const CHAT_TURNS: Record<Minutes, number> = { 20: 5, 25: 5, 30: 6, 40: 8 };
 /** 每堂課最多可以問老師幾次,避免耗盡每日額度。 */
 export const MAX_ASKS = 5;
 
@@ -282,7 +288,6 @@ export type SessionState = z.infer<typeof SessionStateSchema>;
 
 export const NewSessionSchema = z.object({
   userId: z.number().int().positive(),
-  minutes: MinutesSchema,
 });
 
 export type Section = 'review' | 'listening' | 'reading' | 'language' | 'speaking' | 'writing';

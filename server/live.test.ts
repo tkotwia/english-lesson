@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LIVE_SILENCE_MS, LIVE_TURNS, type LiveEvent, type LiveSessionInfo } from '../shared/api.ts';
 import { lessonExercises } from '../shared/lesson.ts';
-import { CHAT_TURNS, SessionStateSchema, type ChatTurn, type SessionView } from '../shared/schema.ts';
+import { CHAT_TURNS, SessionStateSchema, STAGE_MINUTES, type ChatTurn, type SessionView } from '../shared/schema.ts';
 import { createGeminiLive, type LiveSdkCallbacks, type LiveSdkSession, type LiveStreamHandlers, type LiveStreamOptions, type LiveVoice } from './ai/live.ts';
 import { createMockProvider } from './ai/mock.ts';
 import { MOCK_FIXTURES, MOCK_LESSON } from './ai/mockData.ts';
@@ -152,7 +152,8 @@ beforeEach(async () => {
   closedCount = 0;
   connectFailure = null;
   db = openDb(':memory:');
-  const app = createApp({ db, ai: createMockProvider(MOCK_FIXTURES), live: fakeVoice });
+  // 這裡測的是「請 AI 產生課程」之後的流程,所以不用內建的起始課(否則第一堂課會是起始課)。
+  const app = createApp({ db, ai: createMockProvider(MOCK_FIXTURES), live: fakeVoice, starters: false });
   server = await new Promise<Server>((done) => {
     const listening = app.listen(0, '127.0.0.1', () => done(listening));
   });
@@ -368,9 +369,10 @@ describe('即時對話:自由對話', () => {
 
 // ---- 課程裡的情境對話改用即時語音 ----
 
-const MINUTES = 30;
+/** 測試用的使用者是國中生,一堂課 25 分鐘。 */
+const MINUTES = STAGE_MINUTES.junior;
 const LIMIT = CHAT_TURNS[MINUTES];
-const startLesson = async (userId: number): Promise<SessionView> => (await json('POST', '/sessions', { userId, minutes: MINUTES })).json;
+const startLesson = async (userId: number): Promise<SessionView> => (await json('POST', '/sessions', { userId })).json;
 const chatOf = async (sessionId: number): Promise<ChatTurn[]> => (await json('GET', `/sessions/${sessionId}`)).json.state.chat;
 const lessonLive = (sessionId: number) => json('POST', `/sessions/${sessionId}/live`);
 

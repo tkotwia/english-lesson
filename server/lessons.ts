@@ -45,7 +45,7 @@ interface HistoryLesson extends PastLesson {
 /**
  * 這位使用者已經「用掉」的所有課(由新到舊),用來決定新課的主題與文法重點,並做重覆比對。
  * - 上過的課,包含正在上的那一堂;重上的課內容和原本那堂相同,不重覆計入。
- * - 已經備好、還沒上的課也算。否則同時備好的 20、30、40 分鐘三堂會挑到同一個主題與文法重點。
+ * - 已經備好、還沒上的課也算(例如替別的等級備好的那一堂),避免備好的課之間挑到同一個主題與文法重點。
  */
 function lessonHistory(db: Db, userId: number): HistoryLesson[] {
   type Row = { id: number; local_date: string; level: Level; topic: string; grammar_point: string | null; lesson_json: string };

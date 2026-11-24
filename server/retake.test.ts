@@ -46,7 +46,8 @@ function provider(): AiProvider {
 }
 
 async function listen(): Promise<void> {
-  const app = createApp({ db, ai: provider() });
+  // 這裡測的是「請 AI 產生課程」之後的流程,所以不用內建的起始課(否則第一堂課會是起始課)。
+  const app = createApp({ db, ai: provider(), starters: false });
   server = await new Promise<Server>((done) => {
     const listening = app.listen(0, '127.0.0.1', () => done(listening));
   });
@@ -100,7 +101,7 @@ function correctResponse(exercise: Exercise): string {
 const WRONG_TWICE: ExerciseAnswer = { attempts: ['zzz', 'yyy'], hintUsed: false };
 
 async function start(userId: number): Promise<SessionView> {
-  const res = await call('POST', '/sessions', { userId, minutes: 30 });
+  const res = await call('POST', '/sessions', { userId });
   expect(res.status).toBe(201);
   return res.json;
 }

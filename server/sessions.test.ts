@@ -15,7 +15,8 @@ let base: string;
 
 async function start(fixtures: MockFixtures = MOCK_FIXTURES) {
   db = openDb(':memory:');
-  const app = createApp({ db, ai: createMockProvider(fixtures) });
+  // 這裡測的是「請 AI 產生課程」之後的流程,所以不用內建的起始課(否則第一堂課會是起始課)。
+  const app = createApp({ db, ai: createMockProvider(fixtures), starters: false });
   server = await new Promise<Server>((done) => {
     const listening = app.listen(0, '127.0.0.1', () => done(listening));
   });
@@ -46,7 +47,7 @@ async function userWithKey(): Promise<number> {
 }
 
 async function startLesson(userId: number): Promise<SessionView> {
-  const res = await call('POST', '/sessions', { userId, minutes: 30 });
+  const res = await call('POST', '/sessions', { userId });
   expect(res.status).toBe(201);
   return res.json;
 }
@@ -103,7 +104,7 @@ async function usageCalls(userId: number): Promise<number> {
 describe('開始上課', () => {
   it('沒有 API key 不能開新課,並明確說明原因', async () => {
     const user = (await call('POST', '/users', { name: '小明', stage: 'junior' })).json;
-    const res = await call('POST', '/sessions', { userId: user.id, minutes: 30 });
+    const res = await call('POST', '/sessions', { userId: user.id });
     expect(res.status).toBe(400);
     expect(res.json.error.code).toBe('no_key');
   });
@@ -111,7 +112,7 @@ describe('開始上課', () => {
   it('課程以使用者當時的等級與學習階段產生', async () => {
     const userId = await userWithKey();
     const session = await startLesson(userId);
-    expect(session).toMatchObject({ level: 'A2', stage: 'junior', minutes: 30, status: 'in_progress', result: null });
+    expect(session).toMatchObject({ level: 'A2', stage: 'junior', minutes: 25, status: 'in_progress', result: null });
     expect(session.lesson.title).toBe(MOCK_LESSON.title);
   });
 
@@ -119,7 +120,7 @@ describe('開始上課', () => {
   it('已有進行中的課時,再次開始會回到同一堂課,不重新產生', async () => {
     const userId = await userWithKey();
     const first = await startLesson(userId);
-    const again = await call('POST', '/sessions', { userId, minutes: 40 });
+    const again = await call('POST', '/sessions', { userId });
 
     expect(again.status).toBe(200);
     expect(again.json.id).toBe(first.id);
@@ -127,9 +128,22 @@ describe('開始上課', () => {
     expect(await usageCalls(userId)).toBe(1);
   });
 
-  it('只接受 20、30、40 分鐘', async () => {
+  // 年紀越小,能專心的時間越短;長度固定,每天到期的複習份量才會穩定。所以長度不讓學生選。
+  it('課程長度由學習階段決定:國小 20、國中 25、高中與大學 30 分鐘', async () => {
+    const lengths: Record<string, number> = {};
+    for (const stage of ['elementary', 'junior', 'senior', 'university']) {
+      const user = (await call('POST', '/users', { name: stage, stage })).json;
+      await call('PUT', `/users/${user.id}/api-key`, { apiKey: 'key' });
+      lengths[stage] = (await call('POST', '/sessions', { userId: user.id })).json.minutes;
+    }
+    expect(lengths).toEqual({ elementary: 20, junior: 25, senior: 30, university: 30 });
+  });
+
+  it('還開著舊畫面的網頁送來自己選的長度時不採用,仍然照學習階段', async () => {
     const userId = await userWithKey();
-    expect((await call('POST', '/sessions', { userId, minutes: 25 })).status).toBe(400);
+    const res = await call('POST', '/sessions', { userId, minutes: 40 });
+    expect(res.status).toBe(201);
+    expect(res.json.minutes).toBe(25);
   });
 });
 
@@ -145,21 +159,21 @@ describe('額度用完', () => {
         throw new AiError('quota', 'RESOURCE_EXHAUSTED');
       },
     };
-    const app = createApp({ db, ai: exhausted });
+    const app = createApp({ db, ai: exhausted, starters: false });
     server = await new Promise<Server>((done) => {
       const listening = app.listen(0, '127.0.0.1', () => done(listening));
     });
     base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api`;
 
     const userId = await userWithKey();
-    const res = await call('POST', '/sessions', { userId, minutes: 30 });
+    const res = await call('POST', '/sessions', { userId });
 
     expect(res.status).toBe(429);
     expect(res.json.error).toMatchObject({ code: 'quota', detail: 'RESOURCE_EXHAUSTED' });
     expect(res.json.error.message).toContain('下午 3–4 點重置');
     expect((await call('GET', `/sessions/current?userId=${userId}`)).json).toBeNull();
     // 失敗後可以再試(例如稍後額度恢復),不會被「正在備課」卡住。
-    expect((await call('POST', '/sessions', { userId, minutes: 30 })).status).toBe(429);
+    expect((await call('POST', '/sessions', { userId })).status).toBe(429);
   });
 });
 

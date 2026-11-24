@@ -69,11 +69,11 @@ interface SessionRow {
 }
 
 /**
- * 暖身複習的題數上限,依課程長度而定:每堂新單字數(5 / 6 / 8)的 4 倍。
+ * 暖身複習的題數上限,依課程長度而定:每堂新單字數(20 分鐘 5 個,25 與 30 分鐘 6 個,40 分鐘 8 個)的 4 倍。
  * 每個新單字之後至少要複習 4 次(1、4、16、64 天),所以每天上課的話,到期的題數大約就是新單字的 4 倍;
  * 上限低於這個數字,複習會越積越多。超過上限的留在「回顧」頁的複習練習。
  */
-const REVIEW_LIMIT: Record<Minutes, number> = { 20: 20, 30: 24, 40: 32 };
+const REVIEW_LIMIT: Record<Minutes, number> = { 20: 20, 25: 24, 30: 24, 40: 32 };
 
 /** 原本那堂課的編號:重上的課回傳它重上的對象,否則是自己。 */
 const rootId = (row: SessionRow): number => row.retake_of ?? row.id;
@@ -187,8 +187,8 @@ function flagTarget(lesson: Lesson, sessionId: number, target: string): { kind: 
 export interface SessionsOptions {
   /** 是否在上課時於背景預先備好之後的課。 */
   prepareAhead: boolean;
-  /** 背景要備哪些長度的課。 */
-  prepareMinutes: readonly Minutes[];
+  /** 是否使用內建的起始課;沒指定就是使用。 */
+  starters?: boolean;
   /** 進行中的即時語音對話。 */
   live: LiveSessions;
   /** 聽力課文與聽寫句子的音檔;沒有提供時全部由瀏覽器朗讀。 */
@@ -199,7 +199,7 @@ export function sessionsRouter(db: Db, ai: AiProvider, options: SessionsOptions)
   const router = express.Router();
   const preparer = createPreparer(db, ai, {
     enabled: options.prepareAhead,
-    minutes: options.prepareMinutes,
+    starters: options.starters,
     // 課備好了就接著做它的聽力音檔,等學生開始上那堂課時多半已經做好。
     onPrepared: (userId) => options.audio?.ensure(userId),
   });
@@ -215,9 +215,18 @@ export function sessionsRouter(db: Db, ai: AiProvider, options: SessionsOptions)
     res.json(row ? toView(db, row) : null);
   });
 
-  // 各種課程長度現在能不能馬上開始、要等多久:開始上課的畫面用它顯示「已備好」與進度條。
+  // 下一堂課現在能不能馬上開始、要等多久:開始上課的畫面用它決定顯示「開始」、進度條還是「備課」。
   router.get('/prepared', (req, res) => {
     const user = getUserRow(db, parseId(req.query.userId));
+    res.json(preparer.status(user));
+  });
+
+  // 「備課」按鈕:把下一堂課備好才回應。備不成(額度用完、模型忙線)時回報錯誤,畫面會說明原因。
+  router.post('/prepare', async (req, res) => {
+    const { userId } = NewSessionSchema.parse(req.body);
+    const user = getUserRow(db, userId);
+    if (!user.api_key) throw new AiError('no_key');
+    await preparer.prepare({ id: user.id, level: user.level, stage: user.stage, apiKey: user.api_key });
     res.json(preparer.status(user));
   });
 
@@ -227,7 +236,7 @@ export function sessionsRouter(db: Db, ai: AiProvider, options: SessionsOptions)
   });
 
   router.post('/', async (req, res) => {
-    const { userId, minutes } = NewSessionSchema.parse(req.body);
+    const { userId } = NewSessionSchema.parse(req.body);
     const user = getUserRow(db, userId);
 
     // 已有進行中的課就接著上,不重新產生。
@@ -242,8 +251,10 @@ export function sessionsRouter(db: Db, ai: AiProvider, options: SessionsOptions)
 
     generating.add(userId);
     try {
-      // 依序嘗試:背景備好的課 → 內建的起始課 → 請 AI 現場產生(只有這種情況需要等)。
-      const { made } = await preparer.obtain(student, minutes);
+      // 依序嘗試:備好的課 → 內建的起始課 → 請 AI 現場產生(只有這種情況需要等)。
+      // 長度由學習階段決定;起始課是 20 分鐘的份量,所以以拿到的這堂課為準。
+      const { made } = await preparer.obtain(student);
+      const minutes = made.minutes;
       const today = localDate();
       // 開課當下到期的複習項目就固定下來,之後才到期的留到下一堂。
       const review = dueItems(db, userId, today, REVIEW_LIMIT[minutes]);
@@ -267,8 +278,8 @@ export function sessionsRouter(db: Db, ai: AiProvider, options: SessionsOptions)
           JSON.stringify(state),
         );
       res.status(201).json(toView(db, getSessionRow(db, Number(result.lastInsertRowid))));
-      // 這堂課開始了,趁上課的這段時間在背景把之後的課(各種長度)準備好。
-      preparer.replenish(student, minutes);
+      // 這堂課開始了,趁上課的這段時間在背景把下一堂課準備好。
+      preparer.replenish(student);
     } finally {
       generating.delete(userId);
     }
@@ -571,7 +582,7 @@ export function sessionsRouter(db: Db, ai: AiProvider, options: SessionsOptions)
       res.json(toView(db, getSessionRow(db, id)));
       // 開課時的背景準備如果失敗了(例如模型忙線),上完課時再試一次。
       const owner = getUserRow(db, row.user_id);
-      if (owner.api_key) preparer.replenish({ id: owner.id, level: owner.level, stage: owner.stage, apiKey: owner.api_key }, row.minutes);
+      if (owner.api_key) preparer.replenish({ id: owner.id, level: owner.level, stage: owner.stage, apiKey: owner.api_key });
     } finally {
       completing.delete(id);
     }

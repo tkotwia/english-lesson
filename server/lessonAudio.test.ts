@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { LessonAudioInfo, PreparedStatus, QuotaNotice } from '../shared/api.ts';
 import { lessonExercises, type Exercise } from '../shared/lesson.ts';
-import { SessionStateSchema, type Lesson, type Minutes, type SessionState, type SessionView } from '../shared/schema.ts';
+import { SessionStateSchema, type Lesson, type SessionState, type SessionView, type Stage } from '../shared/schema.ts';
 import { createMockProvider } from './ai/mock.ts';
 import { MOCK_FIXTURES, MOCK_LESSON } from './ai/mockData.ts';
 import { AiError, type AiJsonRequest, type AiProvider } from './ai/provider.ts';
@@ -130,14 +130,15 @@ async function call(method: string, path: string, body?: unknown): Promise<{ sta
   return { status: res.status, json: text ? JSON.parse(text) : null };
 }
 
-async function newUser(name = '小明'): Promise<number> {
-  const user = (await call('POST', '/users', { name, stage: 'junior' })).json;
+async function newUser(name = '小明', stage: Stage = 'junior'): Promise<number> {
+  const user = (await call('POST', '/users', { name, stage })).json;
   await call('PUT', `/users/${user.id}/api-key`, { apiKey: 'user-key' });
   return user.id;
 }
 
-async function start(userId: number, minutes: Minutes = 20): Promise<SessionView> {
-  const res = await call('POST', '/sessions', { userId, minutes });
+/** 開始上課。每位使用者在某個等級的第一堂是內建的起始課,之後是 AI 產生的課。 */
+async function start(userId: number): Promise<SessionView> {
+  const res = await call('POST', '/sessions', { userId });
   expect(res.status).toBe(201);
   return res.json;
 }
@@ -179,7 +180,7 @@ async function prepared(session: SessionView): Promise<LessonAudioInfo> {
 async function stocked(userId: number): Promise<void> {
   for (let i = 0; i < 400; i++) {
     const status: PreparedStatus = (await call('GET', `/sessions/prepared?userId=${userId}`)).json;
-    if (status.lengths.every((length) => length.state === 'ready')) return;
+    if (status.source === 'prepared') return;
     await pause(5);
   }
   throw new Error('背景備課一直沒有結束');
@@ -263,7 +264,7 @@ describe('聽力音檔:進入一堂課時在背景唸好', () => {
   it('一次只做一段:另一位使用者的音檔排在後面', async () => {
     closeGate();
     const first = await start(await newUser('小明'));
-    const second = await start(await newUser('小華'), 30);
+    const second = await start(await newUser('小華', 'senior')); // 高中的起始課,內容和國中的不同
     await enter(first);
     await enter(second);
     await pause(20);
@@ -285,7 +286,7 @@ describe('聽力音檔:進入一堂課時在背景唸好', () => {
 
 describe('聽力音檔:備好的課', () => {
   // 學生開始上備好的課時,聽力通常幾分鐘內就到;等那時候才做會來不及。
-  it('課一備好就接著做它的音檔,不必等網頁來要:先做正在上的這堂,再把每一堂備好的課文做完,最後才是聽寫句子', async () => {
+  it('課一備好就接著做它的音檔,不必等網頁來要:先做正在上的這堂,再做備好的那一堂(課文先,聽寫句子後)', async () => {
     await restart({ prepareAhead: true });
     closeGate();
     const userId = await newUser();
@@ -295,9 +296,9 @@ describe('聽力音檔:備好的課', () => {
     await done(session);
 
     expect(texts().slice(0, 3)).toEqual(starterTexts);
-    expect(texts().slice(3, 6).every((text) => text.startsWith('Passage '))).toBe(true);
-    expect(texts().slice(6).every((text) => text.startsWith('Dictation '))).toBe(true);
-    expect(spoken).toHaveLength(3 + 3 + 6);
+    expect(texts()[3]).toMatch(/^Passage /);
+    expect(texts().slice(4).every((text) => text.startsWith('Dictation '))).toBe(true);
+    expect(spoken).toHaveLength(3 + 3);
   });
 
   it('上備好的課時,音檔已經在了', async () => {
@@ -309,10 +310,10 @@ describe('聽力音檔:備好的課', () => {
     await finish(first);
 
     const made = spoken.length;
-    const second = await start(userId, 30);
+    const second = await start(userId); // 用掉備好的那一堂
     const info = await enter(second);
     expect(Object.keys(info.clips)).toEqual(expect.arrayContaining([second.lesson.passage.text, ...second.lesson.listening.dictation]));
-    // 上完第一堂之後又在背景補了一堂 20 分鐘的課,它的音檔會接著做;但第二堂自己的不必再做。
+    // 開始第二堂之後又在背景補了一堂,它的音檔會接著做;但第二堂自己的不必再做。
     await done(second);
     expect(texts().slice(made).filter((text) => text === second.lesson.passage.text)).toEqual([]);
   });
@@ -332,7 +333,7 @@ describe('聽力音檔:備好的課', () => {
 
     await call('PATCH', `/users/${userId}`, { level: 'A2' });
     await prepared(session);
-    expect(spoken).toHaveLength(3 + 3 + 6);
+    expect(spoken).toHaveLength(3 + 3);
   });
 });
 
@@ -428,15 +429,33 @@ describe('聽力音檔:只保留還用得到的', () => {
     expect((await fetch(base.replace(/\/api$/, '') + clips[STARTER.passage.text])).status).toBe(404);
   });
 
+  // 例如更新時被清掉的備課:它的音檔沒有人會再用,不必等到下次有人上課才刪。
+  it('程式啟動時就清掉已經用不到的音檔,不必等到下次做音檔', async () => {
+    const session = await start(await newUser());
+    await prepared(session);
+    expect(files()).toBe(3);
+    await call('DELETE', `/sessions/${session.id}`); // 放棄這堂課:它的音檔沒有人需要了
+
+    await restart();
+    expect(files()).toBe(0);
+  });
+
+  it('程式啟動時不會刪掉還用得到的音檔', async () => {
+    const session = await start(await newUser());
+    await prepared(session);
+    await restart();
+    expect(files()).toBe(3);
+  });
+
   it('另一位使用者還在上的課,音檔不會被刪掉', async () => {
     const other = await start(await newUser('小華'));
     await prepared(other);
 
-    const userId = await newUser('小明');
-    const first = await start(userId, 30);
+    const userId = await newUser('小明', 'senior'); // 高中:上的課和小華(國中)的不同
+    const first = await start(userId);
     await prepared(first);
     await finish(first);
-    await prepared(await start(userId, 30));
+    await prepared(await start(userId));
 
     expect(Object.keys((await ask(other)).clips)).toHaveLength(3);
   });

@@ -176,16 +176,20 @@ export interface LessonSize {
   readAloud: number;
 }
 
+// 各種長度的份量。scale 是課文字數相對於 30 分鐘的比例。
+// 25 分鐘:新單字和 30 分鐘一樣是 6 個,課文、閱讀題與文法題介於 20 與 30 分鐘之間,其餘和 20 分鐘相同。
+// 40 分鐘現在不會再產生新課,留著是因為以前上過的 40 分鐘課還能重上。
+const SIZES: Record<Minutes, Omit<LessonSize, 'passageWords'> & { scale: number }> = {
+  20: { scale: 0.8, listeningQuestions: 2, dictation: 2, readingQuestions: 3, vocab: 5, grammarExercises: 4, readAloud: 3 },
+  25: { scale: 0.9, listeningQuestions: 2, dictation: 2, readingQuestions: 4, vocab: 6, grammarExercises: 5, readAloud: 3 },
+  30: { scale: 1, listeningQuestions: 3, dictation: 2, readingQuestions: 4, vocab: 6, grammarExercises: 6, readAloud: 4 },
+  40: { scale: 1.25, listeningQuestions: 3, dictation: 3, readingQuestions: 5, vocab: 8, grammarExercises: 8, readAloud: 5 },
+};
+
 /** 依課程長度決定各部分的份量。 */
 export function lessonSize(level: Level, minutes: Minutes): LessonSize {
   const [min, max] = LEVEL_GUIDES[level].passageWords;
-  const scale = minutes === 20 ? 0.8 : minutes === 40 ? 1.25 : 1;
-  const counts =
-    minutes === 20
-      ? { listeningQuestions: 2, dictation: 2, readingQuestions: 3, vocab: 5, grammarExercises: 4, readAloud: 3 }
-      : minutes === 40
-        ? { listeningQuestions: 3, dictation: 3, readingQuestions: 5, vocab: 8, grammarExercises: 8, readAloud: 5 }
-        : { listeningQuestions: 3, dictation: 2, readingQuestions: 4, vocab: 6, grammarExercises: 6, readAloud: 4 };
+  const { scale, ...counts } = SIZES[minutes];
   return { passageWords: [Math.round(min * scale), Math.round(max * scale)], ...counts };
 }
 

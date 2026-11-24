@@ -103,7 +103,8 @@ const quotaLive: LiveVoice = {
 beforeEach(async () => {
   liveFailure = null;
   db = openDb(':memory:');
-  const app = createApp({ db, ai: createMockProvider(MOCK_FIXTURES), live: quotaLive });
+  // 這裡測的是「請 AI 產生課程」之後的流程,所以不用內建的起始課(否則第一堂課會是起始課)。
+  const app = createApp({ db, ai: createMockProvider(MOCK_FIXTURES), live: quotaLive, starters: false });
   server = await new Promise<Server>((done) => {
     const listening = app.listen(0, '127.0.0.1', () => done(listening));
   });
@@ -134,7 +135,7 @@ describe('額度上限的通知:網頁查詢', () => {
     const userId = await userWithKey(MOCK_QUOTA_KEY);
     expect(await noticesOf(userId)).toEqual([]);
 
-    const started = await call('POST', '/sessions', { userId, minutes: 30 });
+    const started = await call('POST', '/sessions', { userId });
     expect(started.status).toBe(429);
     const list = await noticesOf(userId);
     expect(list).toEqual([expect.objectContaining({ model: 'mock', task: 'lesson', scope: 'minute', retryAfterSeconds: 30 })]);
@@ -146,7 +147,7 @@ describe('額度上限的通知:網頁查詢', () => {
     const limited = await userWithKey(MOCK_QUOTA_KEY);
     const other = await userWithKey('another-key', '小華');
     const keyless = await userWithKey(null, '小美');
-    await call('POST', '/sessions', { userId: limited, minutes: 30 });
+    await call('POST', '/sessions', { userId: limited });
     expect(await noticesOf(other)).toEqual([]);
     expect(await noticesOf(keyless)).toEqual([]);
   });
@@ -155,7 +156,7 @@ describe('額度上限的通知:網頁查詢', () => {
   it('共用同一把 key 的另一位使用者也看得到', async () => {
     const first = await userWithKey(MOCK_QUOTA_KEY);
     const second = await userWithKey(MOCK_QUOTA_KEY, '小華');
-    await call('POST', '/sessions', { userId: first, minutes: 30 });
+    await call('POST', '/sessions', { userId: first });
     expect(await noticesOf(second)).toHaveLength(1);
   });
 

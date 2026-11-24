@@ -96,7 +96,7 @@ export function createLessonAudio(db: Db, notices: Notices, { voice, dir }: Less
 
   /**
    * 這位使用者要做的音檔,依先後順序:正在上的課最急(課文 → 聽寫),接著是備好的課;
-   * 備好的課先把每一堂的課文都做完,再做聽寫,因為額度不夠時,整篇課文用自然的聲音比幾句聽寫重要。
+   * 課文排在聽寫句子前面,因為額度不夠時,整篇課文用自然的聲音比幾句聽寫重要。
    */
   function wanted(userId: number): Clip[] {
     const user = db.prepare('SELECT level, stage FROM users WHERE id = ?').get(userId) as { level: Level; stage: string } | undefined;
@@ -175,6 +175,9 @@ export function createLessonAudio(db: Db, notices: Notices, { voice, dir }: Less
       }
     }
   }
+
+  // 啟動時先清一次:上次關掉程式之後,有些課可能已經不在了(例如被清掉的備課),它們的音檔不必等到下次做音檔時才刪。
+  prune();
 
   return {
     info(userId, texts) {

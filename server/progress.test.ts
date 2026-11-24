@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { CalendarMonth, ProgressSummary, ReviewListItem, WordList } from '../shared/api.ts';
 import { addDays, localDate, monthOf, monthRange, previousMonth } from '../shared/dates.ts';
 import { FLASHCARD_FORGOT, FLASHCARD_KNOWN, lessonExercises, reviewKey, type Exercise, type ReviewItemView } from '../shared/lesson.ts';
-import { SessionStateSchema, type ExerciseAnswer, type Level, type SessionResult, type SessionState, type SessionView } from '../shared/schema.ts';
+import { SessionStateSchema, STAGE_MINUTES, type ExerciseAnswer, type Level, type SessionResult, type SessionState, type SessionView } from '../shared/schema.ts';
 import { lessonSize } from './ai/cefr.ts';
 import { createMockProvider } from './ai/mock.ts';
 import { MOCK_FIXTURES, MOCK_LESSON } from './ai/mockData.ts';
@@ -25,7 +25,8 @@ const LAST_MONTH = previousMonth(monthOf(TODAY));
 
 beforeEach(async () => {
   db = openDb(':memory:');
-  const app = createApp({ db, ai: createMockProvider(MOCK_FIXTURES) });
+  // 這裡測的是「請 AI 產生課程」之後的流程,所以不用內建的起始課(否則第一堂課會是起始課)。
+  const app = createApp({ db, ai: createMockProvider(MOCK_FIXTURES), starters: false });
   server = await new Promise<Server>((done) => {
     const listening = app.listen(0, '127.0.0.1', () => done(listening));
   });
@@ -76,7 +77,7 @@ const tried = (...attempts: string[]): ExerciseAnswer => ({ attempts, hintUsed: 
 
 /** 上完一堂課。overrides 可以覆蓋個別題目的作答;沒覆蓋的題目(含暖身複習)都第一次就答對。 */
 async function takeLesson(userId: number, overrides: Record<string, ExerciseAnswer> = {}): Promise<SessionView> {
-  const session: SessionView = (await call('POST', '/sessions', { userId, minutes: 30 })).json;
+  const session: SessionView = (await call('POST', '/sessions', { userId })).json;
   const answers: Record<string, ExerciseAnswer> = {};
   for (const { key, exercise } of lessonExercises(session.lesson)) answers[key] = right(exercise);
   for (const item of session.review) answers[reviewKey(item.id)] = right(item.quiz);
@@ -195,7 +196,7 @@ describe('弱點項目庫', () => {
   // 只看老師改好的句子很快就忘。複習時要自己把正確的句子打出來,由程式判斷對不對。
   it('AI 批改找到的寫作錯誤做成訂正題進入項目庫', async () => {
     const userId = await newUser();
-    const session: SessionView = (await call('POST', '/sessions', { userId, minutes: 30 })).json;
+    const session: SessionView = (await call('POST', '/sessions', { userId })).json;
     const answers = Object.fromEntries(lessonExercises(session.lesson).map(({ key, exercise }) => [key, right(exercise)]));
     await call('POST', `/sessions/${session.id}/complete`, { state: { ...SessionStateSchema.parse({}), answers, writing: 'I go to the park yesterday.' } });
 
@@ -209,7 +210,7 @@ describe('弱點項目庫', () => {
 
   it('訂正題要打出正確的句子才算記得;照抄原本錯的句子不算', async () => {
     const userId = await newUser();
-    const session: SessionView = (await call('POST', '/sessions', { userId, minutes: 30 })).json;
+    const session: SessionView = (await call('POST', '/sessions', { userId })).json;
     const answers = Object.fromEntries(lessonExercises(session.lesson).map(({ key, exercise }) => [key, right(exercise)]));
     await call('POST', `/sessions/${session.id}/complete`, { state: { ...SessionStateSchema.parse({}), answers, writing: 'I go to the park yesterday.' } });
     const writing = items(userId).find((item) => item.kind === 'writing')!;
@@ -225,7 +226,7 @@ describe('弱點項目庫', () => {
   // 較早的版本把這類錯誤存成閃卡,由學生自己判斷記不記得。舊項目不能因此停在自評,也不必重建資料。
   it('舊版存成閃卡的寫作與對話錯誤,複習時也改成訂正題;生字閃卡維持閃卡', async () => {
     const userId = await newUser();
-    const session: SessionView = (await call('POST', '/sessions', { userId, minutes: 30 })).json;
+    const session: SessionView = (await call('POST', '/sessions', { userId })).json;
     await call('POST', `/sessions/${session.id}/flags`, { target: 'glossary.0' });
     const insert = db.prepare(
       `INSERT INTO items (user_id, kind, item_key, content_json, status, due_date, first_seen, last_seen) VALUES (?, 'writing', 'writing:old', ?, 'unfamiliar', ?, ?, ?)`,
@@ -303,9 +304,11 @@ describe('暖身複習(間隔重複)', () => {
       const quiz = { type: 'cloze', sentence: 'It is ___.', answers: [`word${i}`], hint: '', explanation: '' };
       insert.run(userId, `vocab:word${i}`, JSON.stringify({ label: `word${i}`, answer: 'x', explanation: '', context: null, quiz }), TODAY, TODAY, TODAY);
     }
-    for (const minutes of [20, 30, 40] as const) {
-      const session: SessionView = (await call('POST', '/sessions', { userId, minutes })).json;
-      expect(session.review.length, `${minutes} 分鐘`).toBe(Math.min(50, 4 * lessonSize('A2', minutes).vocab));
+    for (const stage of ['elementary', 'junior', 'senior'] as const) {
+      await call('PATCH', `/users/${userId}`, { stage });
+      const session: SessionView = (await call('POST', '/sessions', { userId })).json;
+      expect(session.minutes).toBe(STAGE_MINUTES[stage]);
+      expect(session.review.length, `${session.minutes} 分鐘`).toBe(Math.min(50, 4 * lessonSize('A2', session.minutes).vocab));
       await call('DELETE', `/sessions/${session.id}`);
     }
     expect(((await call('GET', `/progress?userId=${userId}`)).json as ProgressSummary).dueCount).toBe(50);
@@ -352,7 +355,7 @@ describe('單獨做複習練習', () => {
 
   it('閃卡由學生自評:記得就拉長間隔,不記得就歸零', async () => {
     const userId = await newUser();
-    const session: SessionView = (await call('POST', '/sessions', { userId, minutes: 30 })).json;
+    const session: SessionView = (await call('POST', '/sessions', { userId })).json;
     await call('POST', `/sessions/${session.id}/flags`, { target: 'glossary.0' });
     const card = itemByKey(userId, 'vocab:noisy')!;
     makeDue(card.id);
@@ -397,7 +400,7 @@ describe('單獨做複習練習', () => {
 describe('手動標記「我不熟」', () => {
   it('答對的題目也可以標記:進入項目庫、明天複習,但不算答錯', async () => {
     const userId = await newUser();
-    const session: SessionView = (await call('POST', '/sessions', { userId, minutes: 30 })).json;
+    const session: SessionView = (await call('POST', '/sessions', { userId })).json;
     const res = await call('POST', `/sessions/${session.id}/flags`, { target: 'vocab.1' });
 
     expect(res.json.flags).toEqual(['vocab.1']);
@@ -407,7 +410,7 @@ describe('手動標記「我不熟」', () => {
 
   it('重複標記同一個對象不會產生第二筆紀錄', async () => {
     const userId = await newUser();
-    const session: SessionView = (await call('POST', '/sessions', { userId, minutes: 30 })).json;
+    const session: SessionView = (await call('POST', '/sessions', { userId })).json;
     await call('POST', `/sessions/${session.id}/flags`, { target: 'vocab.1' });
     await call('POST', `/sessions/${session.id}/flags`, { target: 'vocab.1' });
     const events = db.prepare(`SELECT COUNT(*) AS n FROM item_events WHERE result = 'manual'`).get() as { n: number };
@@ -424,7 +427,7 @@ describe('手動標記「我不熟」', () => {
 
   it('這堂課裡不存在的題號會被拒絕', async () => {
     const userId = await newUser();
-    const session: SessionView = (await call('POST', '/sessions', { userId, minutes: 30 })).json;
+    const session: SessionView = (await call('POST', '/sessions', { userId })).json;
     expect((await call('POST', `/sessions/${session.id}/flags`, { target: 'vocab.99' })).status).toBe(400);
     expect((await call('POST', `/sessions/${session.id}/flags`, { target: 'glossary.99' })).status).toBe(400);
   });
@@ -506,7 +509,7 @@ describe('回顧:學生當時答錯的內容', () => {
 
   it('手動標記「我不熟」的項目沒有答錯的作答', async () => {
     const userId = await newUser();
-    const session: SessionView = (await call('POST', '/sessions', { userId, minutes: 30 })).json;
+    const session: SessionView = (await call('POST', '/sessions', { userId })).json;
     await call('POST', `/sessions/${session.id}/flags`, { target: 'vocab.1' });
     expect(await wrongAnswersOf(userId, 'delicious')).toEqual([]);
   });
@@ -559,7 +562,7 @@ describe('舊版留下的紀錄:補上當時答錯的內容', () => {
 
   it('手動標記沒有作答可找;單獨複習練習的紀錄當時沒有存,維持原狀', async () => {
     const userId = await newUser();
-    const session: SessionView = (await call('POST', '/sessions', { userId, minutes: 30 })).json;
+    const session: SessionView = (await call('POST', '/sessions', { userId })).json;
     await call('POST', `/sessions/${session.id}/flags`, { target: 'vocab.1' });
     const flagged = itemByKey(userId, 'vocab:delicious')!;
     await call('POST', '/review/results', { userId, answers: { [flagged.id]: tried('nope', 'still nope') } });
@@ -614,7 +617,7 @@ describe('日曆', () => {
 
   it('進行中還沒完成的課不會出現在日曆上', async () => {
     const userId = await newUser();
-    await call('POST', '/sessions', { userId, minutes: 30 });
+    await call('POST', '/sessions', { userId });
     const month: CalendarMonth = (await call('GET', `/calendar?userId=${userId}&month=${monthOf(TODAY)}`)).json;
     expect(month).toMatchObject({ days: [], average: null });
   });
@@ -656,7 +659,7 @@ describe('刪除使用者', () => {
 // 流暢度練習用的是學生已經熟悉的內容:上一堂上完的課文。
 describe('課前重溫上一課', () => {
   const retitle = (sessionId: number, title: string) => db.prepare(`UPDATE sessions SET lesson_json = json_set(lesson_json, '$.title', ?) WHERE id = ?`).run(title, sessionId);
-  const start = async (userId: number): Promise<SessionView> => (await call('POST', '/sessions', { userId, minutes: 30 })).json;
+  const start = async (userId: number): Promise<SessionView> => (await call('POST', '/sessions', { userId })).json;
 
   it('第一堂課沒有上一課可以重溫', async () => {
     const userId = await newUser();
@@ -755,7 +758,7 @@ describe('單字表', () => {
 
   it('還沒上完的課不列入;課後手動標過「我不熟」的會註明', async () => {
     const userId = await newUser();
-    const session: SessionView = (await call('POST', '/sessions', { userId, minutes: 30 })).json;
+    const session: SessionView = (await call('POST', '/sessions', { userId })).json;
     expect((await words(userId)).words).toEqual([]);
 
     const answers = Object.fromEntries(lessonExercises(session.lesson).map(({ key, exercise }) => [key, right(exercise)]));

@@ -2,7 +2,7 @@ import express from 'express';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { LESSON_MINUTES, type AiErrorCode, type Minutes } from '../shared/schema.ts';
+import type { AiErrorCode } from '../shared/schema.ts';
 import { createMockLive, type LiveVoice } from './ai/live.ts';
 import { AiError, type AiProvider } from './ai/provider.ts';
 import type { Db } from './db.ts';
@@ -28,8 +28,8 @@ export interface AppOptions {
   staticDir?: string;
   /** 是否在上課時於背景預先備好之後的課。沒指定時不做(測試時比較單純);正式執行時由 index.ts 開啟。 */
   prepareAhead?: boolean;
-  /** 背景要備哪些長度的課;沒指定就是 20、30、40 分鐘都備。 */
-  prepareMinutes?: readonly Minutes[];
+  /** 是否使用內建的起始課;沒指定就是使用。只有測試「請 AI 產生課程」的流程時才關掉。 */
+  starters?: boolean;
   /** 即時語音對話的實作;沒指定時用假資料的(測試不必連網)。 */
   live?: LiveVoice;
   /** 用語音合成事先唸好聽力課文與聽寫句子。沒指定時不做,全部由瀏覽器朗讀。 */
@@ -44,7 +44,7 @@ const AI_ERROR_STATUS: Record<AiErrorCode, number> = {
   unavailable: 502,
 };
 
-export function createApp({ db, ai: provider, staticDir, prepareAhead = false, prepareMinutes = LESSON_MINUTES, live = createMockLive(), speech }: AppOptions): express.Express {
+export function createApp({ db, ai: provider, staticDir, prepareAhead = false, starters, live = createMockLive(), speech }: AppOptions): express.Express {
   const app = express();
   // 任何一次 AI 呼叫遇到額度上限(429)都記成通知,由網頁顯示給使用者。
   const notices = createNotices();
@@ -55,7 +55,7 @@ export function createApp({ db, ai: provider, staticDir, prepareAhead = false, p
   app.use('/api/settings', settingsRouter(db, ai));
   const liveSessions = createLiveSessions(db, live, notices);
   const audio = speech ? createLessonAudio(db, notices, speech) : undefined;
-  app.use('/api/sessions', sessionsRouter(db, ai, { prepareAhead, prepareMinutes, live: liveSessions, audio }));
+  app.use('/api/sessions', sessionsRouter(db, ai, { prepareAhead, starters, live: liveSessions, audio }));
   app.use('/api/review', reviewRouter(db));
   app.use('/api/placement', placementRouter(db, ai, { prepareAhead }));
   app.use('/api/words', wordsRouter(db));
