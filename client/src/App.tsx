@@ -3,6 +3,7 @@ import { Layout } from './components/Layout.tsx';
 import { Calendar } from './pages/Calendar.tsx';
 import { Home } from './pages/Home.tsx';
 import { Lesson } from './pages/Lesson.tsx';
+import { LiveTrial } from './pages/LiveTrial.tsx';
 import { Placement } from './pages/Placement.tsx';
 import { Review } from './pages/Review.tsx';
 import { ReviewPractice } from './pages/ReviewPractice.tsx';
@@ -34,6 +35,7 @@ export function App() {
           <Route path="/review/practice" element={<ReviewPractice />} />
           <Route path="/words" element={<Words />} />
           <Route path="/placement" element={<Placement />} />
+          <Route path="/live" element={<LiveTrial />} />
           <Route path="/settings" element={<Settings />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

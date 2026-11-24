@@ -1,6 +1,6 @@
 import express from 'express';
 import { z } from 'zod';
-import { FlagSchema } from '../../shared/api.ts';
+import { FlagSchema, type LessonAudioInfo } from '../../shared/api.ts';
 import { localDate } from '../../shared/dates.ts';
 import { lessonExercises, reviewExercises, type ReviewItemView } from '../../shared/lesson.ts';
 import { buildSessionResult, gradeExercise, wrongResponses } from '../../shared/scoring.ts';
@@ -25,7 +25,7 @@ import {
   type SessionView,
   type Stage,
 } from '../../shared/schema.ts';
-import { askPrompt, chatPrompt, gradePrompt } from '../ai/prompts.ts';
+import { askPrompt, chatPrompt, gradePrompt, lessonLivePrompt } from '../ai/prompts.ts';
 import { AiError, type AiProvider } from '../ai/provider.ts';
 import { usageRecorder } from '../ai/usage.ts';
 import { transaction, type Db } from '../db.ts';
@@ -42,6 +42,8 @@ import {
   type ItemContent,
 } from '../items.ts';
 import type { LessonStudent } from '../lessons.ts';
+import type { LiveSessions } from '../liveSessions.ts';
+import { lessonTexts, type LessonAudio } from '../lessonAudio.ts';
 import { createPreparer } from '../prepared.ts';
 import { recordTaskTiming, taskTimings } from '../timings.ts';
 import { pickVideo } from '../videos.ts';
@@ -83,14 +85,18 @@ const FLUENCY_LOOKBACK = 10;
  * 課前流暢度練習要用的上一課:這位使用者在這堂課之前上完的最近一堂(不含重上的課,也不是這堂課重上的對象,
  * 否則重溫的課文就是今天要上的那一篇)。同時附上最近一次有紀錄的成績,讓學生和自己比。
  */
-function previousLesson(db: Db, row: SessionRow): SessionView['previous'] {
-  const earlier = db
+function previousLessonRow(db: Db, row: SessionRow): { lesson_json: string; level: Level } | undefined {
+  return db
     .prepare(
-      `SELECT lesson_json FROM sessions
+      `SELECT lesson_json, level FROM sessions
        WHERE user_id = ? AND status = 'completed' AND retake_of IS NULL AND id < ? AND id != ?
        ORDER BY id DESC LIMIT 1`,
     )
-    .get(row.user_id, row.id, rootId(row)) as { lesson_json: string } | undefined;
+    .get(row.user_id, row.id, rootId(row)) as { lesson_json: string; level: Level } | undefined;
+}
+
+function previousLesson(db: Db, row: SessionRow): SessionView['previous'] {
+  const earlier = previousLessonRow(db, row);
   if (!earlier) return null;
   const lesson = JSON.parse(earlier.lesson_json) as Lesson;
 
@@ -183,11 +189,20 @@ export interface SessionsOptions {
   prepareAhead: boolean;
   /** 背景要備哪些長度的課。 */
   prepareMinutes: readonly Minutes[];
+  /** 進行中的即時語音對話。 */
+  live: LiveSessions;
+  /** 聽力課文與聽寫句子的音檔;沒有提供時全部由瀏覽器朗讀。 */
+  audio?: LessonAudio;
 }
 
 export function sessionsRouter(db: Db, ai: AiProvider, options: SessionsOptions): express.Router {
   const router = express.Router();
-  const preparer = createPreparer(db, ai, { enabled: options.prepareAhead, minutes: options.prepareMinutes });
+  const preparer = createPreparer(db, ai, {
+    enabled: options.prepareAhead,
+    minutes: options.prepareMinutes,
+    // 課備好了就接著做它的聽力音檔,等學生開始上那堂課時多半已經做好。
+    onPrepared: (userId) => options.audio?.ensure(userId),
+  });
   // 防止連點造成同一位使用者同時產生兩堂課或批改兩次,白白消耗額度。
   const generating = new Set<number>();
   const completing = new Set<number>();
@@ -265,6 +280,28 @@ export function sessionsRouter(db: Db, ai: AiProvider, options: SessionsOptions)
 
   // 重上一堂已經完成的課:用同一份課文與題目,不需要 AI 重新產生。
   // 重上只當練習,分數不計入日曆與月平均;不會 / 不熟的項目照常更新。
+  /** 這堂課的聽力課文、聽寫句子與「重聽上一課」的課文裡,已經有音檔的那些。 */
+  function lessonAudio(row: SessionRow): LessonAudioInfo {
+    if (!options.audio) return { clips: {}, working: false };
+    const texts = lessonTexts(JSON.parse(row.lesson_json) as Lesson, row.level);
+    const previous = previousLessonRow(db, row);
+    if (previous) texts.push({ text: (JSON.parse(previous.lesson_json) as Lesson).passage.text, level: previous.level });
+    return options.audio.info(row.user_id, texts);
+  }
+
+  router.get('/:id/audio', (req, res) => {
+    res.json(lessonAudio(getSessionRow(db, parseId(req.params.id))));
+  });
+
+  // 網頁一進入這堂課、之後每換一個步驟都會呼叫一次:請背景把還缺的音檔做出來,並回報目前有哪些。
+  // 起始課與現場產生的課是從這裡開始做的(聽力通常在幾分鐘後才開始);先前因為額度而停下來的也在這裡重試。
+  // 和單純詢問(GET)分開,是為了讓網頁在等待時可以反覆詢問,而不會每問一次就重試一次。
+  router.post('/:id/audio', (req, res) => {
+    const row = getSessionRow(db, parseId(req.params.id));
+    if (row.status === 'in_progress') options.audio?.ensure(row.user_id);
+    res.json(lessonAudio(row));
+  });
+
   router.post('/:id/retake', (req, res) => {
     const original = getSessionRow(db, parseId(req.params.id));
     if (original.status !== 'completed') throw new HttpError(409, '這堂課還沒上完,不能重上。');
@@ -338,6 +375,42 @@ export function sessionsRouter(db: Db, ai: AiProvider, options: SessionsOptions)
     } finally {
       chatting.delete(id);
     }
+  });
+
+  // 情境對話改用即時語音進行:學生直接說,老師用聲音回答。
+  // 每一次來回的文字稿由伺服器記進這堂課的對話紀錄,之後照原本的方式批改。輪數和打字的對話共用同一個上限。
+  router.post('/:id/live', async (req, res) => {
+    const id = parseId(req.params.id);
+    const row = getSessionRow(db, id);
+    if (row.status !== 'in_progress') throw new HttpError(409, '這堂課已經完成。');
+    const state = storedState(row);
+    const turnLimit = CHAT_TURNS[row.minutes];
+    const used = state.chat.filter((turn) => turn.role === 'student').length;
+    if (used >= turnLimit) throw new HttpError(409, '這次的對話已經結束了。');
+
+    const user = getUserRow(db, row.user_id);
+    const lesson = JSON.parse(row.lesson_json) as Lesson;
+    const info = await options.live.start(
+      { id: user.id, level: row.level, stage: row.stage, apiKey: user.api_key },
+      {
+        prompt: lessonLivePrompt({ level: row.level, stage: row.stage, lesson, chat: state.chat, turnsLeft: turnLimit - used }),
+        topic: lesson.speaking.scenario,
+        turns: turnLimit - used,
+        onExchange: ({ student, teacher }) => {
+          // 每次都重新讀取最新的進度再寫入:對話進行的期間,瀏覽器可能存過別的作答。
+          const latest = getSessionRow(db, id);
+          const current = storedState(latest);
+          const spoken = () => current.chat.filter((turn) => turn.role === 'student').length;
+          // 沒有聽到學生說話的內容(只有雜音)時不算一輪,也不記進紀錄;課已經交卷了也不再寫入。
+          if (student !== '' && latest.status === 'in_progress' && spoken() < turnLimit) {
+            current.chat.push({ role: 'student', text: student, corrections: [] }, { role: 'teacher', text: teacher, corrections: [] });
+            saveState(db, id, current);
+          }
+          return latest.status === 'in_progress' ? turnLimit - spoken() : 0;
+        },
+      },
+    );
+    res.status(201).json(info);
   });
 
   // 問老師:課堂中隨時提問。每堂課有次數上限,不計分。

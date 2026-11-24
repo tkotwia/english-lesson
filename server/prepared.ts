@@ -36,6 +36,8 @@ export interface PreparerOptions {
   minutes: readonly Minutes[];
   /** 目前時間(毫秒);測試時可以替換。 */
   now?: () => number;
+  /** 背景備好一堂課時呼叫(用來接著做那堂課的聽力音檔)。 */
+  onPrepared?: (userId: number) => void;
 }
 
 export interface Preparer {
@@ -138,6 +140,7 @@ export function createPreparer(db: Db, ai: AiProvider, options: PreparerOptions)
           if (stocked(target.student, minutes)) return;
           putStock(userId, await generate(target.student, minutes));
           console.log(`[prepare] 使用者 ${userId}:${target.student.level} ${minutes} 分鐘的課已經備好`);
+          options.onPrepared?.(userId);
         });
       } catch (err) {
         // 失敗多半是額度用完或模型忙線。剩下的長度先不做,避免一直碰壁;下次開課或上完課時會再試。

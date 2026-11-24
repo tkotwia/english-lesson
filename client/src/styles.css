@@ -1665,3 +1665,17 @@ strong.tone-low {
   flex-direction: column;
   gap: 0.2rem;
 }
+
+/* 即時語音對話 */
+.live-start {
+  margin-top: 0.8rem;
+}
+
+.live-status {
+  margin: 0 0 0.6rem;
+  font-weight: 600;
+}
+
+.live-status.is-listening {
+  color: var(--ok);
+}

@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { Link, NavLink, Outlet } from 'react-router';
+import { QuotaNotices } from './QuotaNotices.tsx';
 import { STAGE_LABELS } from '../../../shared/schema.ts';
 import { useUsers } from '../userContext.tsx';
 import { Avatar } from './Avatar.tsx';
@@ -28,6 +29,7 @@ export function Layout() {
             <NavLink to="/review">回顧</NavLink>
             <NavLink to="/words">單字表</NavLink>
             <NavLink to="/placement">分級測驗</NavLink>
+            <NavLink to="/live">即時對話</NavLink>
             <NavLink to="/settings">設定</NavLink>
           </nav>
         )}
@@ -48,6 +50,7 @@ export function Layout() {
           </Link>
         </div>
       </header>
+      <QuotaNotices />
       <main className="content">
         <Outlet />
       </main>

@@ -1,10 +1,14 @@
 import type {
   CalendarMonth,
+  LessonAudioInfo,
+  LiveEvent,
+  LiveSessionInfo,
   PlacementAttempt,
   PlacementResult,
   PlacementStatus,
   PreparedStatus,
   ProgressSummary,
+  QuotaNotice,
   ReviewListItem,
   TaskTimings,
   WordList,
@@ -95,6 +99,14 @@ export const api = {
   getDueItems: (userId: number) => request<{ items: ReviewItemView[] }>('GET', `/review/due?userId=${userId}`),
 
   getWords: (userId: number, level: Level) => request<WordList>('GET', `/words?userId=${userId}&level=${level}`),
+  getNotices: (userId: number, after: number) => request<{ notices: QuotaNotice[] }>('GET', `/notices?userId=${userId}&after=${after}`),
+
+  startLive: (userId: number) => request<LiveSessionInfo>('POST', '/live', { userId }),
+  startLessonLive: (sessionId: number) => request<LiveSessionInfo>('POST', `/sessions/${sessionId}/live`),
+  getLessonAudio: (sessionId: number) => request<LessonAudioInfo>('GET', `/sessions/${sessionId}/audio`),
+  prepareLessonAudio: (sessionId: number) => request<LessonAudioInfo>('POST', `/sessions/${sessionId}/audio`),
+  endLive: (id: string) => request<void>('DELETE', `/live/${id}`),
+
   getPlacement: (userId: number) => request<PlacementStatus>('GET', `/placement?userId=${userId}`),
   startPlacement: (userId: number) => request<PlacementAttempt>('POST', '/placement', { userId }),
   completePlacement: (id: number, answers: PlacementAnswers, tts: boolean) => request<PlacementResult>('POST', `/placement/${id}/complete`, { answers, tts }),
@@ -114,4 +126,51 @@ export function errorCode(err: unknown): string | undefined {
 /** 供應商回傳的原始錯誤內容,除錯用;沒有就回傳 undefined。 */
 export function errorDetail(err: unknown): string | undefined {
   return err instanceof ApiError ? err.detail : undefined;
+}
+
+/** 伺服器沒有照預期回應時,把它的錯誤內容轉成 ApiError。 */
+async function liveFailure(res: Response): Promise<ApiError> {
+  const body = (await res.json().catch(() => null)) as { error?: { code?: string; message?: string; detail?: string } } | null;
+  return new ApiError(res.status, body?.error?.code ?? 'http', body?.error?.message ?? '對話沒有成功,請再試一次。', body?.error?.detail);
+}
+
+/** 讀一行一個 JSON 的串流。一次收到的內容可能切在一行的中間,所以先接起來再逐行處理。 */
+async function readEvents(res: Response, onEvent: (event: LiveEvent) => void): Promise<void> {
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let pending = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    pending += decoder.decode(value, { stream: !done });
+    const lines = pending.split('\n');
+    pending = lines.pop() ?? '';
+    for (const line of lines) if (line.trim()) onEvent(JSON.parse(line) as LiveEvent);
+    if (done) break;
+  }
+  if (pending.trim()) onEvent(JSON.parse(pending) as LiveEvent);
+}
+
+const NETWORK_ERROR = new ApiError(0, 'network', '無法連線到本機伺服器,請確認程式是否已啟動。');
+
+/**
+ * 接上整場即時對話的串流,直到對話結束(或用 signal 中斷)才返回。
+ * 伺服器在瀏覽器接上之後才請老師開場。
+ */
+export async function liveEvents(id: string, onEvent: (event: LiveEvent) => void, signal: AbortSignal): Promise<void> {
+  const res = await fetch(`/api/live/${id}/events`, { signal }).catch((err: unknown) => {
+    if (signal.aborted) throw err;
+    throw NETWORK_ERROR;
+  });
+  if (!res.ok || !res.body) throw await liveFailure(res);
+  await readEvents(res, onEvent);
+}
+
+/** 送出麥克風的一小段聲音。 */
+export async function liveAudio(id: string, audio: Int16Array): Promise<void> {
+  const res = await fetch(`/api/live/${id}/audio`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: new Blob([audio.buffer as ArrayBuffer]),
+  });
+  if (!res.ok) throw await liveFailure(res);
 }

@@ -1,8 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { createGeminiProvider, mapGeminiError, UNAVAILABLE_COOLDOWN_MS, type GeminiOptions, type InteractionClient } from './gemini.ts';
+import {
+  createGeminiProvider,
+  mapGeminiError,
+  UNAVAILABLE_COOLDOWN_MS,
+  type GeminiOptions,
+  type InteractionClient,
+  MINUTE_QUOTA_COOLDOWN_MS,
+  quotaScope,
+  retryAfterSeconds,
+} from './gemini.ts';
 import { geminiOptionsFromEnv } from './index.ts';
-import { AiError, type AiUsage } from './provider.ts';
+import { AiError, type AiUsage , type QuotaEvent } from './provider.ts';
 
 // 這裡用假的 SDK client 測試備援、逾時與錯誤處理的邏輯,不會連到 Google。
 // 真實 API 的行為另外用真正的 key 實測過(見 index.ts 開頭的數字)。
@@ -15,6 +24,9 @@ type RequestOptions = Parameters<InteractionClient['interactions']['create']>[1]
 type Reply = { output_text?: string; usage?: { total_input_tokens?: number; total_output_tokens?: number }; tookMs?: number } | Error;
 
 const httpError = (status: number, message: string) => Object.assign(new Error(message), { status });
+/** Google 的 429 訊息會帶上限的名稱;這兩個是每日與每分鐘上限的樣子。 */
+const DAILY_LIMIT = 'Quota exceeded. quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier';
+const MINUTE_LIMIT = 'Quota exceeded. quotaId: GenerateRequestsPerMinutePerProjectPerModel-FreeTier';
 
 const ok = (answer: string, input = 100, output = 20, tookMs = 0): Reply => ({
   output_text: JSON.stringify({ answer }),
@@ -113,14 +125,44 @@ describe('Gemini:縮短等待時間', () => {
 
 describe('Gemini:記住剛失敗的模型', () => {
   // 沒有這個機制時,每一次呼叫都會先在同一個失敗的模型上白等一次才換備援。
-  it('額度用完的模型在同一個額度日內不再嘗試,隔天恢復', async () => {
-    const t = setup({ strong: [httpError(429, 'quota'), ok('strong is back')], medium: [ok('first'), ok('second')] });
+  it('超過每日上限的模型在同一個額度日內不再嘗試,隔天恢復', async () => {
+    const t = setup({ strong: [httpError(429, DAILY_LIMIT), ok('strong is back')], medium: [ok('first'), ok('second')] });
 
     await expect(t.generate()).resolves.toEqual({ answer: 'first' });
+    t.clock.now += 3 * 60 * 60_000; // 過了三小時,還是同一個額度日
     await expect(t.generate()).resolves.toEqual({ answer: 'second' });
     expect(t.modelsCalled()).toEqual(['strong', 'medium', 'medium']);
 
     t.clock.now += 24 * 60 * 60_000; // 過了太平洋時間午夜,額度重置
+    await expect(t.generate()).resolves.toEqual({ answer: 'strong is back' });
+  });
+
+  // 429 不一定是「今天用完了」:每分鐘的請求數或 token 數超過也是 429,而那一分鐘後就恢復。
+  // 把它當成用完一整天,較好的模型會白白被擱到隔天,學生整天都在用備援模型。
+  it('超過每分鐘上限的模型只跳過一下子,一分鐘後就再試', async () => {
+    const t = setup({ strong: [httpError(429, MINUTE_LIMIT), ok('strong is back')], medium: [ok('fallback')] });
+
+    await expect(t.generate()).resolves.toEqual({ answer: 'fallback' });
+    t.clock.now += MINUTE_QUOTA_COOLDOWN_MS;
+    await expect(t.generate()).resolves.toEqual({ answer: 'strong is back' });
+  });
+
+  it('Google 建議等更久時,照它說的時間等', async () => {
+    const t = setup({ strong: [httpError(429, 'Quota exceeded: requests per minute. Please retry in 95.2s.'), ok('strong is back')], medium: [ok('one'), ok('two')] });
+
+    await t.generate();
+    t.clock.now += 70_000;
+    await expect(t.generate()).resolves.toEqual({ answer: 'two' });
+    t.clock.now += 30_000;
+    await expect(t.generate()).resolves.toEqual({ answer: 'strong is back' });
+  });
+
+  // 看不出是哪一種上限時,寧可一分鐘後白試一次(會立刻被拒絕),也不要把其實馬上能用的模型擱到隔天。
+  it('訊息裡看不出是哪一種上限時,當成每分鐘的上限', async () => {
+    const t = setup({ strong: [httpError(429, 'Resource has been exhausted'), ok('strong is back')], medium: [ok('fallback')] });
+
+    await t.generate();
+    t.clock.now += MINUTE_QUOTA_COOLDOWN_MS;
     await expect(t.generate()).resolves.toEqual({ answer: 'strong is back' });
   });
 
@@ -169,6 +211,46 @@ describe('Gemini:記住剛失敗的模型', () => {
     await t.generate();
     await t.generate();
     expect(t.modelsCalled()).toEqual(['strong', 'strong']);
+  });
+});
+
+// 改用備援模型對學生是無感的,但備援的品質較差。所以每一次 429 都要回報,讓畫面可以通知使用者。
+describe('Gemini:回報超過額度上限', () => {
+  const generateWith = (t: ReturnType<typeof setup>, events: QuotaEvent[]) =>
+    t.provider.generateJson({ tier: 'quality', task: 'test', apiKey: 'user-key', system: 'sys', input: 'in', schema: Schema, onQuota: (event) => events.push(event) });
+
+  it('即使改用別的模型成功了,也回報是哪個模型、哪一種上限、建議等多久', async () => {
+    const t = setup({ strong: [httpError(429, 'Quota exceeded: requests per minute. Please retry in 23.4s.')], medium: [ok('fallback')] });
+    const events: QuotaEvent[] = [];
+    await expect(generateWith(t, events)).resolves.toEqual({ answer: 'fallback' });
+    expect(events).toEqual([{ model: 'strong', scope: 'minute', retryAfterSeconds: 24 }]);
+  });
+
+  it('每日上限與看不出種類的上限也分別回報', async () => {
+    const t = setup({ strong: [httpError(429, DAILY_LIMIT)], medium: [httpError(429, 'Resource has been exhausted')], lite: [ok('last')] });
+    const events: QuotaEvent[] = [];
+    await generateWith(t, events);
+    expect(events).toEqual([
+      { model: 'strong', scope: 'day', retryAfterSeconds: null },
+      { model: 'medium', scope: 'unknown', retryAfterSeconds: null },
+    ]);
+  });
+
+  it('忙線(503)不是額度問題,不回報', async () => {
+    const t = setup({ strong: [httpError(503, 'high demand')], medium: [ok('fallback')] });
+    const events: QuotaEvent[] = [];
+    await generateWith(t, events);
+    expect(events).toEqual([]);
+  });
+
+  it('從錯誤訊息判斷上限的種類與建議的等待時間', () => {
+    expect(quotaScope('quotaId: GenerateRequestsPerMinutePerProjectPerModel-FreeTier')).toBe('minute');
+    expect(quotaScope('Quota exceeded for metric: input tokens per minute')).toBe('minute');
+    expect(quotaScope('quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier')).toBe('day');
+    expect(quotaScope('You exceeded your current quota')).toBe('unknown');
+    expect(retryAfterSeconds('Please retry in 23.4s.')).toBe(24);
+    expect(retryAfterSeconds('"retryDelay": "41s"')).toBe(41);
+    expect(retryAfterSeconds('no hint here')).toBeNull();
   });
 });
 

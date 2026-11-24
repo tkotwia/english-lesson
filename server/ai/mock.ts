@@ -7,6 +7,9 @@ export type MockFixtures = Record<string, unknown | ((request: AiJsonRequest<unk
 /** 在假資料模式下,貼上這個字串當 key 可以模擬「key 無效」。 */
 export const MOCK_INVALID_KEY = 'invalid';
 
+/** 在假資料模式下,貼上這個字串當 key 可以模擬「超過額度上限(429)」。 */
+export const MOCK_QUOTA_KEY = 'quota';
+
 const MOCK_MODEL = 'mock';
 
 /** 假資料實作:不連網、不耗額度,供開發與測試使用。 */
@@ -18,6 +21,10 @@ export function createMockProvider(fixtures: MockFixtures = {}): AiProvider {
     async generateJson<T>(request: AiJsonRequest<T>): Promise<T> {
       if (!request.apiKey) throw new AiError('no_key');
       if (request.apiKey === MOCK_INVALID_KEY) throw new AiError('invalid_key', 'mock: invalid key');
+      if (request.apiKey === MOCK_QUOTA_KEY) {
+        request.onQuota?.({ model: MOCK_MODEL, scope: 'minute', retryAfterSeconds: 30 });
+        throw new AiError('quota', 'mock: requests per minute exceeded, please retry in 30s');
+      }
       const fixture = fixtures[request.task];
       if (fixture === undefined) throw new AiError('unavailable', `mock: 沒有 ${request.task} 的假資料`);
       const raw = typeof fixture === 'function' ? fixture(request as AiJsonRequest<unknown>) : fixture;

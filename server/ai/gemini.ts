@@ -1,7 +1,7 @@
 import { GoogleGenAI } from '@google/genai';
 import { z } from 'zod';
-import type { AiErrorCode, AiTier, KeyTestResult } from '../../shared/schema.ts';
-import { AiError, type AiJsonRequest, type AiProvider, type UsageRecorder } from './provider.ts';
+import type { AiTier, KeyTestResult } from '../../shared/schema.ts';
+import { AiError, type AiJsonRequest, type AiProvider, type QuotaScope, type UsageRecorder } from './provider.ts';
 import { quotaDate } from './usage.ts';
 
 /** 把 SDK 丟出的錯誤對應成我們自己的錯誤類別。 */
@@ -17,6 +17,24 @@ export function mapGeminiError(err: unknown): AiError {
   if (status === 401 || status === 403) return new AiError('invalid_key', detail);
   if (status === 400 && /api[ _-]?key/i.test(detail)) return new AiError('invalid_key', detail);
   return new AiError('unavailable', detail);
+}
+
+/**
+ * 429 超過的是哪一種上限。Google 的錯誤訊息會帶上限的名稱(例如 …PerMinutePerProjectPerModel、…PerDay…)。
+ * 分清楚很重要:每分鐘的上限一分鐘後就恢復,每日的上限要等到隔天;看不出來時當成每分鐘的,
+ * 寧可一分鐘後白試一次(會立刻被拒絕),也不要把一個其實馬上能用的模型擱到隔天。
+ */
+export function quotaScope(detail: string): QuotaScope {
+  if (/per[\s_-]?day|perday|daily|\bRPD\b/i.test(detail)) return 'day';
+  if (/per[\s_-]?minute|perminute|\bRPM\b|\bTPM\b/i.test(detail)) return 'minute';
+  return 'unknown';
+}
+
+/** 錯誤訊息裡 Google 建議等幾秒再試(例如 "Please retry in 23.5s"、retryDelay: "23s");沒有時是 null。 */
+export function retryAfterSeconds(detail: string): number | null {
+  const match = /retry in\s+([\d.]+)\s*s/i.exec(detail) ?? /retryDelay["']?\s*[:=]\s*["']?([\d.]+)s/i.exec(detail);
+  const value = match ? Number(match[1]) : NaN;
+  return Number.isFinite(value) && value > 0 ? Math.ceil(value) : null;
 }
 
 /** Gemini 的結構化輸出只支援 JSON Schema 的子集合,去掉它不需要的中繼欄位。 */
@@ -92,6 +110,9 @@ const isRequestRejected = (err: unknown): boolean => typeof err === 'object' && 
 /** 模型暫時無法使用(忙線、逾時)時,隔多久再試它。 */
 export const UNAVAILABLE_COOLDOWN_MS = 5 * 60_000;
 
+/** 超過每分鐘的上限(或看不出是哪一種上限)時,至少隔多久再試它。 */
+export const MINUTE_QUOTA_COOLDOWN_MS = 60_000;
+
 /** 記下某個模型為什麼暫時不用:額度用完(到下一個額度日為止),或暫時無法使用(幾分鐘)。 */
 type Cooldown = { quotaDay: string } | { until: number };
 
@@ -109,9 +130,14 @@ export function createGeminiProvider(options: GeminiOptions): AiProvider {
     return active;
   };
 
-  const startCooldown = (apiKey: string, model: string, code: AiErrorCode): void => {
-    if (code === 'quota') cooldowns.set(`${apiKey}|${model}`, { quotaDay: quotaDate(new Date(now())) });
-    else if (code === 'unavailable') cooldowns.set(`${apiKey}|${model}`, { until: now() + UNAVAILABLE_COOLDOWN_MS });
+  const startCooldown = (apiKey: string, model: string, error: AiError): void => {
+    const key = `${apiKey}|${model}`;
+    if (error.code === 'unavailable') cooldowns.set(key, { until: now() + UNAVAILABLE_COOLDOWN_MS });
+    if (error.code !== 'quota') return;
+    const detail = error.detail ?? '';
+    // 每日的上限:到下一個額度日之前都不用再試。每分鐘的上限:過一下就恢復了。
+    if (quotaScope(detail) === 'day') cooldowns.set(key, { quotaDay: quotaDate(new Date(now())) });
+    else cooldowns.set(key, { until: now() + Math.max(MINUTE_QUOTA_COOLDOWN_MS, (retryAfterSeconds(detail) ?? 0) * 1000) });
   };
 
   /**
@@ -161,7 +187,11 @@ export function createGeminiProvider(options: GeminiOptions): AiProvider {
             // key 本身有問題時,換模型也沒用。
             if (mapped.code === 'invalid_key') throw mapped;
             console.warn(`[ai] ${request.task} ${model} 無法使用(${mapped.code},等了 ${seconds(startedAt)} 秒):${mapped.detail ?? ''}`);
-            if (!isRequestRejected(err)) startCooldown(request.apiKey, model, mapped.code);
+            if (!isRequestRejected(err)) startCooldown(request.apiKey, model, mapped);
+            if (mapped.code === 'quota') {
+              const detail = mapped.detail ?? '';
+              request.onQuota?.({ model, scope: quotaScope(detail), retryAfterSeconds: retryAfterSeconds(detail) });
+            }
             lastError = mapped;
             break;
           }

@@ -132,6 +132,62 @@ export interface PlacementStatus {
   results: PlacementResult[];
 }
 
+/** 免費額度的上限到了(Google 回 429)時,顯示給使用者看的通知。 */
+export interface QuotaNotice {
+  id: number;
+  /** 發生的時間(ISO 8601)。 */
+  at: string;
+  model: string;
+  /** 當時在做什麼:lesson 備課、grade 批改、chat 對話、ask 問老師、placement 分級測驗出題、live 即時對話、speech 製作聽力音檔。 */
+  task: string;
+  /** minute:每分鐘的上限;day:每日的上限;unknown:看不出是哪一種。 */
+  scope: 'minute' | 'day' | 'unknown';
+  /** Google 建議等幾秒再試;不知道時是 null。 */
+  retryAfterSeconds: number | null;
+}
+
+/** 「即時對話」頁面的自由對話:一次對話裡學生可以說幾輪。(課程裡的情境對話輪數依課程長度而定。) */
+export const LIVE_TURNS = 5;
+
+/** 學生安靜多久(毫秒)算說完了。比一般語音對話常用的值長,給學生停下來想的空間。 */
+export const LIVE_SILENCE_MS = 1200;
+
+/** 一堂課的聽力課文與聽寫句子裡,已經用自然的聲音唸好的音檔。沒有音檔的文字由瀏覽器朗讀。 */
+export interface LessonAudioInfo {
+  /** 文字 → 音檔的網址。 */
+  clips: Record<string, string>;
+  /** 伺服器是否還在背景製作這位使用者的音檔(是的話,過一下再問可能會多幾段)。 */
+  working: boolean;
+}
+
+/** 開始一場即時語音對話後回傳的資訊。 */
+export interface LiveSessionInfo {
+  id: string;
+  /** 學生可以說幾輪。 */
+  turns: number;
+  /** 聊的主題或情境。 */
+  topic: string;
+  /** 學生的聲音要用的取樣率,以及老師的聲音的取樣率(都是 16 位元單聲道 PCM)。 */
+  inputRate: number;
+  outputRate: number;
+}
+
+/** 對話進行中,伺服器陸續送給瀏覽器的內容(一行一個 JSON)。 */
+export type LiveEvent =
+  /** 學生這段話的文字稿片段。 */
+  | { type: 'heard'; text: string }
+  /** 老師說的話的文字稿片段。 */
+  | { type: 'said'; text: string }
+  /** 老師的聲音片段,base64 編碼的 PCM。 */
+  | { type: 'audio'; data: string }
+  /** 老師說完一輪。turnsLeft 是學生還可以說幾輪。 */
+  | { type: 'done'; turnsLeft: number }
+  /** 學生開口打斷了老師,還沒播完的聲音要立刻停掉。 */
+  | { type: 'interrupted' }
+  /** 對話結束(輪數用完,或時間到了)。 */
+  | { type: 'ended' }
+  | { type: 'error'; code: string; message: string };
+
 export const PlacementCompleteSchema = z.object({
   answers: PlacementAnswersSchema,
   /** 作答時瀏覽器能不能朗讀;不能的話沒有聽力題。 */

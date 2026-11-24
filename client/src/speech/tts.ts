@@ -1,6 +1,7 @@
 import type { Level } from '../../../shared/schema.ts';
 
 // 語音朗讀:使用瀏覽器內建的 Web Speech API,不耗 AI 額度。
+// 例外:聽力課文與聽寫句子如果伺服器已經用自然的聲音唸好(setRecordings),就播那個音檔。
 
 export const ttsSupported = (): boolean => typeof window !== 'undefined' && 'speechSynthesis' in window;
 
@@ -45,8 +46,76 @@ export interface SpeakOptions {
   onEnd?: () => void;
 }
 
-/** 朗讀一段文字。含中文的句子用中文語音,其餘用英文語音。會先停掉正在唸的內容。 */
-export function speak(text: string, { rate = 1, onEnd }: SpeakOptions = {}): void {
+// 已經唸好的音檔:文字 → 網址。由上課的頁面向伺服器問來。
+let recordings: Record<string, string> = {};
+/** 正在播放的音檔,以及它結束(播完或被停掉)時要通知誰。 */
+let playing: { audio: HTMLAudioElement; onEnd?: () => void } | null = null;
+
+/** 設定目前有哪些文字已經有唸好的音檔;之後 speak 遇到一模一樣的文字就播音檔。 */
+export function setRecordings(clips: Record<string, string>): void {
+  recordings = clips;
+}
+
+/** 放掉正在播放的音檔(不通知任何人),回傳它結束時原本要通知的對象。 */
+function releaseRecording(): (() => void) | undefined {
+  if (!playing) return undefined;
+  const { audio, onEnd } = playing;
+  playing = null;
+  audio.onended = null;
+  audio.onerror = null;
+  audio.pause();
+  return onEnd;
+}
+
+/** 停掉正在播放的音檔。和瀏覽器朗讀被取消時一樣會通知「不再唸了」,畫面才不會一直停在播放中。 */
+function stopRecording(): void {
+  releaseRecording()?.();
+}
+
+/** 播放唸好的音檔。播不出來(檔案已經被清掉、連不上)就改用瀏覽器朗讀,學生不會因此聽不到。 */
+function playRecording(url: string, onEnd: (() => void) | undefined, fallback: () => void): void {
+  const audio = new Audio(url);
+  const current = { audio, onEnd };
+  playing = current;
+  const failed = () => {
+    if (playing !== current) return;
+    releaseRecording();
+    fallback();
+  };
+  audio.onended = () => {
+    if (playing !== current) return;
+    releaseRecording()?.();
+  };
+  audio.onerror = failed;
+  audio.play().catch(failed);
+}
+
+// 學生自己按下播放的內容(課文、聽寫句子、單字…)。它還在唸的時候,老師的台詞不可以自動朗讀把它打斷。
+let requested = false;
+const requestedStillPlaying = (): boolean =>
+  requested && (playing !== null || (ttsSupported() && (window.speechSynthesis.speaking || window.speechSynthesis.pending)));
+
+/**
+ * 朗讀一段文字(學生按下播放,或程式要學生聽的內容)。含中文的句子用中文語音,其餘用英文語音。會先停掉正在唸的內容。
+ * 有唸好的音檔時播音檔(語速在製作時已經依等級決定,rate 不適用)。
+ */
+export function speak(text: string, options: SpeakOptions = {}): void {
+  requested = true;
+  start(text, options);
+}
+
+function start(text: string, options: SpeakOptions): void {
+  stopRecording();
+  const url = recordings[text];
+  if (url) {
+    if (ttsSupported()) window.speechSynthesis.cancel();
+    playRecording(url, options.onEnd, () => synthesize(text, options));
+    return;
+  }
+  synthesize(text, options);
+}
+
+function synthesize(text: string, { rate = 1, onEnd }: SpeakOptions): void {
   if (!ttsSupported()) {
     onEnd?.();
     return;
@@ -73,6 +142,7 @@ export function speak(text: string, { rate = 1, onEnd }: SpeakOptions = {}): voi
 }
 
 export function stopSpeaking(): void {
+  stopRecording();
   if (ttsSupported()) window.speechSynthesis.cancel();
 }
 
@@ -103,6 +173,10 @@ export function requestAutoSpeak(text: string, rate: number): void {
   batchTimer = window.setTimeout(() => {
     const last = batch.at(-1);
     batch = [];
-    if (last) speak(last.text, { rate: last.rate });
+    // 學生自己按下播放的內容還在唸(例如按下「播放課文」的同時,畫面出現老師的下一句話):這句不出聲。
+    // 老師的話在畫面上看得到,旁邊也有重聽的按鈕;課文被打斷的話,學生就聽不到了。
+    if (!last || requestedStillPlaying()) return;
+    requested = false;
+    start(last.text, { rate: last.rate });
   }, 50);
 }

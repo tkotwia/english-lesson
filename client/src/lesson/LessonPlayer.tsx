@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
+import type { LessonAudioInfo } from '../../../shared/api.ts';
 import { lessonExercises, reviewExercises } from '../../../shared/lesson.ts';
 import { SECTION_LABELS, type ExerciseAnswer, type Section, type SessionState, type SessionView } from '../../../shared/schema.ts';
 import { api, errorDetail, errorMessage } from '../api.ts';
 import { SpeechProvider, type SpeechAbility } from '../speech/SpeechContext.tsx';
 import { sttSupported } from '../speech/stt.ts';
-import { autoSpeakEnabled, setAutoSpeak, stopSpeaking, ttsSupported } from '../speech/tts.ts';
+import { autoSpeakEnabled, setAutoSpeak, setRecordings, stopSpeaking, ttsSupported } from '../speech/tts.ts';
 import { AskTeacher } from './AskTeacher.tsx';
 import { FluencyStep } from './FluencyStep.tsx';
 import { LanguageStep, ListeningStep, ReadingStep, ReviewStep, SpeakingStep, WritingStep } from './steps.tsx';
 
 const WRITING_SAVE_DELAY_MS = 800;
+/** 伺服器還在製作聽力音檔時,多久再問一次有沒有新做好的。 */
+const AUDIO_POLL_MS = 15_000;
 
 /** 課堂的階段:計分的六個部分,加上課前不計分的「重溫上一課」。 */
 type StepId = 'fluency' | Section;
@@ -90,9 +93,33 @@ export function LessonPlayer({ session, onAbandoned }: Props) {
     () => () => {
       window.clearTimeout(writingTimer.current);
       stopSpeaking();
+      setRecordings({});
     },
     [],
   );
+
+  // 聽力課文與聽寫句子:伺服器在背景用自然的聲音唸好的音檔。進入這堂課、每換一個步驟,都請伺服器把還缺的做出來;
+  // 伺服器還在製作時每隔一段時間再問有沒有新的。還沒做好或問不到的,朗讀時自動改用瀏覽器的聲音。
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+    const load = (ask: (sessionId: number) => Promise<LessonAudioInfo>) => {
+      ask(session.id)
+        .then(({ clips, working }) => {
+          if (cancelled) return;
+          setRecordings(clips);
+          if (working) timer = window.setTimeout(() => load(api.getLessonAudio), AUDIO_POLL_MS);
+        })
+        .catch(() => {
+          // 問不到就維持現狀;沒有音檔的內容由瀏覽器朗讀。
+        });
+    };
+    load(api.prepareLessonAudio);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [session.id, stepIndex]);
 
   // 把偵測到的語音能力存起來,計分時才知道哪些部分沒辦法進行。
   useEffect(() => {
@@ -116,6 +143,13 @@ export function LessonPlayer({ session, onAbandoned }: Props) {
   const onChat = async (message: string) => {
     const { chat } = await api.chatSession(session.id, message);
     update({ chat }, 'local');
+  };
+  // 語音對話的紀錄由伺服器依聽到的內容寫入;每進行一輪就重新讀一次,畫面與「對話是否完成」才會跟上。
+  const onChatRefresh = () => {
+    api
+      .getSession(session.id)
+      .then((fresh) => update({ chat: fresh.state.chat }, 'local'))
+      .catch((err) => setSaveError(errorMessage(err)));
   };
   const onAsk = async (question: string) => {
     const { asks } = await api.askSession(session.id, question);
@@ -243,7 +277,14 @@ export function LessonPlayer({ session, onAbandoned }: Props) {
           {step === 'reading' && <ReadingStep key="reading" {...stepProps} />}
           {step === 'language' && <LanguageStep key="language" {...stepProps} />}
           {step === 'speaking' && (
-            <SpeakingStep key="speaking" {...stepProps} chat={state.chat} onChat={onChat} onSkipChat={() => update({ chatUnavailable: true })} />
+            <SpeakingStep
+              key="speaking"
+              {...stepProps}
+              chat={state.chat}
+              onChat={onChat}
+              onSkipChat={() => update({ chatUnavailable: true })}
+              onChatRefresh={onChatRefresh}
+            />
           )}
           {step === 'writing' && (
             <WritingStep

@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { createProvider, geminiOptionsFromEnv } from './ai/index.ts';
+import { createLiveVoice, createProvider, createSpeechVoice, geminiOptionsFromEnv } from './ai/index.ts';
 import { createApp } from './app.ts';
 import { openDb } from './db.ts';
 import { backfillResponses } from './items.ts';
@@ -23,12 +23,15 @@ const db = openDb(dbPath);
 const backfilled = backfillResponses(db);
 if (backfilled > 0) console.log(`[server] 已從上課紀錄補回舊紀錄裡答錯的作答(檢查了 ${backfilled} 筆)`);
 const ai = createProvider(process.env);
+const speech = createSpeechVoice(process.env);
 const app = createApp({
   db,
   ai,
   staticDir: isProduction ? resolve('dist/client') : undefined,
   prepareAhead,
   prepareMinutes,
+  live: createLiveVoice(process.env),
+  speech: speech ? { voice: speech, dir: join(dataDir, 'audio') } : undefined,
 });
 
 // 只接受這台電腦自己的連線:資料庫裡有使用者的 API key,不對區域網路開放。
@@ -41,6 +44,7 @@ app.listen(port, '127.0.0.1', () => {
       `[server] 思考程度:品質類 ${thinking.quality ?? '模型預設'}、對話類 ${thinking.chat ?? '模型預設'};逾時:品質類 ${timeoutMs.quality! / 1000} 秒、對話類 ${timeoutMs.chat! / 1000} 秒`,
     );
   }
+  console.log(`[server] 聽力音檔:${speech ? `用語音合成事先唸好(${speech.models.join(' → ')}),還沒做好或額度用完時由瀏覽器朗讀` : '不使用,由瀏覽器朗讀'}`);
   console.log(`[server] 預先備課:${prepareAhead ? `開啟(上課時在背景準備 ${prepareMinutes.join('、')} 分鐘的課)` : '關閉'};每個等級的第一堂 20 分鐘課使用內建的起始課`);
   if (isProduction) {
     console.log(`[server] 請用 Chrome 開啟 http://localhost:${port}`);

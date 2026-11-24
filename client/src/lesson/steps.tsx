@@ -5,8 +5,9 @@ import { api } from '../api.ts';
 import { WaitProgress } from '../components/WaitProgress.tsx';
 import { useSpeech } from '../speech/SpeechContext.tsx';
 import { speak, speechRate } from '../speech/tts.ts';
-import { Conversation, conversationFinished } from './Conversation.tsx';
+import { conversationFinished } from './Conversation.tsx';
 import { allDone, ExerciseSequence, FlagButton, type Flagging } from './ExerciseSequence.tsx';
+import { LessonTalk } from './LessonTalk.tsx';
 import { teacherLine, type LineKey } from './lines.ts';
 import { Passage } from './Passage.tsx';
 import { TeacherBubble } from './TeacherBubble.tsx';
@@ -234,10 +235,12 @@ export interface SpeakingStepProps extends StepProps {
   chat: ChatTurn[];
   onChat: (message: string) => Promise<void>;
   onSkipChat: () => void;
+  /** 對話紀錄由伺服器寫入;語音對話進行時,請外層重新讀一次。 */
+  onChatRefresh: () => void;
 }
 
-/** 口說:跟讀課文句子(需要麥克風),再與老師做情境對話(可以說或打字)。 */
-export function SpeakingStep({ session, state, exercises, onAnswer, onNext, nextLabel, chat, onChat, onSkipChat }: SpeakingStepProps) {
+/** 口說:跟讀課文句子(需要麥克風),再與老師做情境對話(預設用即時語音,也可以改用打字)。 */
+export function SpeakingStep({ session, state, exercises, onAnswer, onNext, nextLabel, chat, onChat, onSkipChat, onChatRefresh }: SpeakingStepProps) {
   const { lesson, level } = session;
   const { stt } = useSpeech();
   const readAloud = exercises.filter((item) => item.section === 'speaking');
@@ -266,7 +269,7 @@ export function SpeakingStep({ session, state, exercises, onAnswer, onNext, next
           {state.chatUnavailable ? (
             <p className="alert alert-warn">這堂課跳過了對話,口說的這一部分不計分。</p>
           ) : (
-            <Conversation session={session} chat={chat} onSend={onChat} onSkip={onSkipChat} />
+            <LessonTalk session={session} chat={chat} onSend={onChat} onSkip={onSkipChat} onRefresh={onChatRefresh} />
           )}
         </>
       )}

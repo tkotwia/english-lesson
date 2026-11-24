@@ -14,6 +14,23 @@ export interface AiUsage {
 
 export type UsageRecorder = (usage: AiUsage) => void;
 
+/**
+ * 額度是以 Google 專案為單位計算的,同時受三種上限限制;任何一種超過都會被拒絕(HTTP 429):
+ * minute:每分鐘的請求數或 token 數,大約一分鐘後恢復;day:每日的請求數,太平洋時間午夜重置;
+ * unknown:錯誤訊息裡看不出是哪一種。
+ */
+export type QuotaScope = 'minute' | 'day' | 'unknown';
+
+/** 某個模型回了 429。 */
+export interface QuotaEvent {
+  model: string;
+  scope: QuotaScope;
+  /** Google 建議等幾秒再試;訊息裡沒有時是 null。 */
+  retryAfterSeconds: number | null;
+}
+
+export type QuotaRecorder = (event: QuotaEvent) => void;
+
 export interface AiJsonRequest<T> {
   /** quality:產生課程與批改;chat:對話回合與問老師。兩類使用不同模型以節省額度。 */
   tier: AiTier;
@@ -26,6 +43,8 @@ export interface AiJsonRequest<T> {
   schema: z.ZodType<T>;
   /** 每次成功的 API 呼叫都會回報一次用量(包含因格式錯誤而重試的那次)。 */
   onUsage?: UsageRecorder;
+  /** 有模型因為超過額度上限(429)而被拒絕時回報;即使之後改用別的模型成功了也會回報。 */
+  onQuota?: QuotaRecorder;
 }
 
 export interface AiProvider {
@@ -39,7 +58,7 @@ export interface AiProvider {
 export const AI_ERROR_MESSAGES: Record<AiErrorCode, string> = {
   no_key: '尚未設定 API key,請到「設定」頁貼上。',
   invalid_key: 'API key 無效或沒有權限,請到「設定」頁確認。',
-  quota: '今日免費額度已用完,台灣時間下午 3–4 點重置。可以先做不耗額度的複習。',
+  quota: '免費額度的上限到了。如果是每分鐘的上限,大約一分鐘後就能再試;如果是每日的上限,要等台灣時間下午 3–4 點重置。可以先做不耗額度的複習。',
   bad_output: 'AI 回傳的內容格式不正確,請再試一次。',
   unavailable: 'AI 服務暫時無法使用,請稍後再試。',
 };
