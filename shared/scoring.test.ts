@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { correctAnswerText, FLASHCARD_FORGOT, type Exercise } from './lesson.ts';
-import { checkAnswer, combineScore, gradeExercise, isExerciseDone, markSolution, normalizeAnswer, wordAccuracy, wrongResponses } from './scoring.ts';
+import { checkAnswer, combineScore, gradeExercise, isExerciseDone, isSkipped, markSolution, normalizeAnswer, wordAccuracy, wrongResponses } from './scoring.ts';
 
 const mcq: Exercise = { type: 'mcq', prompt: 'Pick B', options: ['A', 'B', 'C'], answerIndex: 1, explanation: 'because' };
 const cloze: Exercise = { type: 'cloze', sentence: 'I ___ happy.', answers: ['am', "'m"], hint: 'be 動詞', explanation: 'because' };
@@ -62,6 +62,28 @@ describe('單題判定:分數要能區分「會」「不熟」「不會」', () 
     expect(isExerciseDone(mcq, { attempts: ['0'], hintUsed: false })).toBe(false);
     expect(isExerciseDone(mcq, { attempts: ['1'], hintUsed: false })).toBe(true);
     expect(isExerciseDone(mcq, { attempts: ['0', '2'], hintUsed: false })).toBe(true);
+  });
+});
+
+// 複習時不一定方便出聲,所以跟讀題可以跳過;其他題型不行,否則不會的題都跳過就好。
+describe('跳過', () => {
+  const readAloud: Exercise = { type: 'readAloud', sentence: 'We went to the night market.', explanation: '' };
+  const dictation: Exercise = { type: 'dictation', sentence: 'We went to the night market.', explanation: '' };
+  const skipped = { attempts: [], hintUsed: false, skipped: true };
+
+  it('跟讀題跳過之後這一題就結束,下一題才會出現', () => {
+    expect(isSkipped(readAloud, skipped)).toBe(true);
+    expect(isExerciseDone(readAloud, skipped)).toBe(true);
+  });
+
+  it('沒有按跳過的跟讀題不算跳過', () => {
+    expect(isSkipped(readAloud, { attempts: ['we went'], hintUsed: false })).toBe(false);
+    expect(isSkipped(readAloud, undefined)).toBe(false);
+  });
+
+  it('其他題型帶著「跳過」也不算:這一題還沒結束,要照常作答', () => {
+    expect(isSkipped(dictation, skipped)).toBe(false);
+    expect(isExerciseDone(dictation, skipped)).toBe(false);
   });
 });
 

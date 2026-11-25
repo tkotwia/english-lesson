@@ -115,6 +115,44 @@ export interface WordList {
   words: WordListItem[];
 }
 
+/** 文法表裡一題當初答錯、不熟,或手動標過「我不熟」的文法練習。 */
+export interface GrammarMiss {
+  /** 出這一題的那堂課。 */
+  sessionId: number;
+  date: string;
+  /** 題目:選擇題是題幹,克漏字是有空格的句子,重組是要排出的句子的中文意思。 */
+  question: string;
+  /** 正確答案。 */
+  answer: string;
+  /** 當初在課堂上作答的結果;correct 表示答對了但手動標過「我不熟」。 */
+  outcome: Outcome;
+  /** 當初答錯時填的內容。 */
+  wrongAnswers: string[];
+  flagged: boolean;
+  /** 現在在間隔複習裡的狀態;不在複習中是 null。 */
+  status: ItemStatus | null;
+}
+
+/** 文法表裡的一項:這個等級的一個文法重點。 */
+export interface GrammarListItem {
+  /** 文法重點在課程清單上的名稱(較早的課沒有記錄時,是那堂課自己寫的標題)。 */
+  point: string;
+  /** 最近一次教這個文法的那堂課寫的標題、講解與例句;還沒教到的是 null。 */
+  latest: { title: string; explanation: string; examples: string[] } | null;
+  /** 教過這個文法的課,新的在前面;還沒教到的是空的。 */
+  lessons: { sessionId: number; date: string; lessonTitle: string }[];
+  /** 這個文法做過的練習題數(各堂相加,不含重上)。 */
+  exerciseCount: number;
+  /** 當初答錯、不熟或手動標過的練習題,新的在前面。 */
+  missed: GrammarMiss[];
+}
+
+/** 文法表:依課程清單的順序列出這個等級的文法重點,教過的在清單上的位置不變,清單以外的排在最後。 */
+export interface GrammarList {
+  level: Level;
+  points: GrammarListItem[];
+}
+
 export interface PlacementStatus {
   /** 現在按開始能不能馬上作答。 */
   ready: boolean;

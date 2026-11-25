@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { FlagSchema, type LessonAudioInfo } from '../../shared/api.ts';
 import { localDate } from '../../shared/dates.ts';
 import { lessonExercises, reviewExercises, type ReviewItemView } from '../../shared/lesson.ts';
-import { buildSessionResult, gradeExercise, wrongResponses } from '../../shared/scoring.ts';
+import { buildSessionResult, gradeExercise, isSkipped, wrongResponses } from '../../shared/scoring.ts';
 import {
   AskBodySchema,
   AskReplySchema,
@@ -38,6 +38,7 @@ import {
   itemKeyForExercise,
   recordLearned,
   recordMiss,
+  postponeReview,
   recordReviewResult,
   type ItemContent,
 } from '../items.ts';
@@ -575,7 +576,8 @@ export function sessionsRouter(db: Db, ai: AiProvider, options: SessionsOptions)
         review.forEach((item, index) => {
           const exercise = reviewItems[index]!;
           const answer = state.answers[exercise.key];
-          recordReviewResult(db, item.id, gradeExercise(exercise.exercise, answer).outcome, id, today, wrongResponses(exercise.exercise, answer));
+          if (isSkipped(exercise.exercise, answer)) postponeReview(db, item.id, today);
+          else recordReviewResult(db, item.id, gradeExercise(exercise.exercise, answer).outcome, id, today, wrongResponses(exercise.exercise, answer));
         });
       });
 

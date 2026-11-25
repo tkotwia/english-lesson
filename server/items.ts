@@ -1,7 +1,8 @@
 import type { ReviewListItem } from '../shared/api.ts';
 import { correctAnswerText, lessonExercises, reviewExercises, reviewKey, type Exercise, type LessonExercise, type ReviewItemView } from '../shared/lesson.ts';
 import type { ExerciseAnswer, ItemKind, Lesson, Outcome } from '../shared/schema.ts';
-import { gradeExercise, normalizeAnswer, wrongResponses } from '../shared/scoring.ts';
+import { addDays } from '../shared/dates.ts';
+import { gradeExercise, isSkipped, normalizeAnswer, wrongResponses } from '../shared/scoring.ts';
 import { afterCorrect, afterLearned, afterManualFlag, afterMiss, isDue, type ItemStatus, type SrsState } from '../shared/srs.ts';
 import { transaction, type Db } from './db.ts';
 import { HttpError } from './errors.ts';
@@ -157,6 +158,16 @@ export function recordReviewResult(db: Db, itemId: number, outcome: Outcome, ses
   addEvent(db, itemId, sessionId, date, outcome, responses);
 }
 
+/**
+ * 學生跳過了這個複習項目:不算對也不算錯,間隔不變,只是明天再出現。
+ * 把到期日改成明天(而不是留在原本的日期)是為了排序:到期的項目是最久沒複習的排前面,
+ * 一直跳過的項目如果留在最前面,會佔住暖身複習的名額,把其他項目擠出去。
+ * 還沒到期的項目(提前練習時)不動,否則反而把它提早了。
+ */
+export function postponeReview(db: Db, itemId: number, date: string): void {
+  db.prepare('UPDATE items SET due_date = ? WHERE id = ? AND due_date <= ?').run(addDays(date, 1), itemId, date);
+}
+
 /** 今天到期的項目,最久沒複習的排前面。 */
 export function dueItems(db: Db, userId: number, today: string, limit: number): ReviewItemView[] {
   const rows = db
@@ -205,16 +216,17 @@ export function missedItemsInRange(db: Db, userId: number, from: string, to: str
   }));
 }
 
-/** 依項目庫裡存的題目重新判分,回傳每個項目的結果。項目必須屬於這位使用者。 */
+/** 依項目庫裡存的題目重新判分,回傳每個項目的結果(跳過的是 skipped)。項目必須屬於這位使用者。 */
 export function gradeReviewAnswers(
   db: Db,
   userId: number,
-  answers: Record<string, { attempts: string[]; hintUsed: boolean }>,
-): { itemId: number; outcome: Outcome; responses: string[] }[] {
+  answers: Record<string, ExerciseAnswer>,
+): { itemId: number; outcome: Outcome | 'skipped'; responses: string[] }[] {
   return Object.entries(answers).map(([id, answer]) => {
     const row = db.prepare('SELECT * FROM items WHERE id = ? AND user_id = ?').get(Number(id), userId) as ItemRow | undefined;
     if (!row) throw new HttpError(404, `找不到複習項目 ${id}`);
     const quiz = quizOf(row, JSON.parse(row.content_json) as ItemContent);
+    if (isSkipped(quiz, answer)) return { itemId: row.id, outcome: 'skipped', responses: [] };
     return { itemId: row.id, outcome: gradeExercise(quiz, answer).outcome, responses: wrongResponses(quiz, answer) };
   });
 }

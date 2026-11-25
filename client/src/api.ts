@@ -1,5 +1,6 @@
 import type {
   CalendarMonth,
+  GrammarList,
   LessonAudioInfo,
   LiveEvent,
   LiveSessionInfo,
@@ -100,6 +101,7 @@ export const api = {
   getDueItems: (userId: number) => request<{ items: ReviewItemView[] }>('GET', `/review/due?userId=${userId}`),
 
   getWords: (userId: number, level: Level) => request<WordList>('GET', `/words?userId=${userId}&level=${level}`),
+  getGrammar: (userId: number, level: Level) => request<GrammarList>('GET', `/grammar?userId=${userId}&level=${level}`),
   getNotices: (userId: number, after: number) => request<{ notices: QuotaNotice[] }>('GET', `/notices?userId=${userId}&after=${after}`),
 
   startLive: (userId: number) => request<LiveSessionInfo>('POST', '/live', { userId }),
@@ -112,7 +114,7 @@ export const api = {
   startPlacement: (userId: number) => request<PlacementAttempt>('POST', '/placement', { userId }),
   completePlacement: (id: number, answers: PlacementAnswers, tts: boolean) => request<PlacementResult>('POST', `/placement/${id}/complete`, { answers, tts }),
   postReviewResults: (userId: number, answers: Record<string, ExerciseAnswer>) =>
-    request<{ results: { itemId: number; outcome: Outcome }[] }>('POST', '/review/results', { userId, answers }),
+    request<{ results: { itemId: number; outcome: Outcome | 'skipped' }[] }>('POST', '/review/results', { userId, answers }),
 };
 
 export function errorMessage(err: unknown): string {

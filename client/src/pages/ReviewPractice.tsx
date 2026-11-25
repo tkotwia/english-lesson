@@ -18,7 +18,7 @@ export function ReviewPractice() {
 
   const [items, setItems] = useState<ReviewItemView[] | null>(null);
   const [answers, setAnswers] = useState<Record<string, ExerciseAnswer>>({});
-  const [results, setResults] = useState<{ itemId: number; outcome: Outcome }[] | null>(null);
+  const [results, setResults] = useState<{ itemId: number; outcome: Outcome | 'skipped' }[] | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const speech = useDetectedSpeech();
@@ -72,6 +72,8 @@ export function ReviewPractice() {
   }
 
   if (results) {
+    const skipped = results.filter((result) => result.outcome === 'skipped').length;
+    const practiced = results.length - skipped;
     const remembered = results.filter((result) => result.outcome === 'correct').length;
     return (
       <section className="page">
@@ -79,9 +81,10 @@ export function ReviewPractice() {
         <div className="card">
           <p>
             共 {results.length} 項:<strong className="text-ok">記得 {remembered} 項</strong>、
-            <strong className="text-warn">還不熟 {results.length - remembered} 項</strong>。
+            <strong className="text-warn">還不熟 {practiced - remembered} 項</strong>
+            {skipped > 0 && <>、跳過 {skipped} 項</>}。
           </p>
-          <p className="muted">記得的項目會隔久一點再出現;還不熟的明天會再複習。這次練習不列入日曆分數。</p>
+          <p className="muted">記得的項目會隔久一點再出現;還不熟的明天會再複習{skipped > 0 && ';跳過的到期項目也排到明天'}。這次練習不列入日曆分數。</p>
           <div className="form-actions">
             <Link to="/review" className="button button-primary">
               回到回顧
@@ -110,6 +113,7 @@ export function ReviewPractice() {
             onAnswer={(key, answer) => setAnswers((current) => ({ ...current, [key]: answer }))}
             showContext
             showKind
+            skippableSpeaking
           />
         </SpeechProvider>
         {error && <p className="alert alert-error">{error}</p>}

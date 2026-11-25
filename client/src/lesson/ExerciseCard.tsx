@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { FLASHCARD_FORGOT, FLASHCARD_KNOWN, isSentenceExercise, reorderWords, type Exercise, type SentenceExercise } from '../../../shared/lesson.ts';
 import { BLANK, type ExerciseAnswer, type Level } from '../../../shared/schema.ts';
-import { ACCURACY_CORRECT, checkAnswer, gradeExercise, isExerciseDone, wordAccuracy } from '../../../shared/scoring.ts';
+import { ACCURACY_CORRECT, checkAnswer, gradeExercise, isExerciseDone, isSkipped, wordAccuracy } from '../../../shared/scoring.ts';
 import { useSpeech } from '../speech/SpeechContext.tsx';
 import { isMicUnavailable, listen, sttErrorMessage, type Listening } from '../speech/stt.ts';
 import { speak, speechRate } from '../speech/tts.ts';
@@ -16,12 +16,14 @@ interface Props {
   onChange: (answer: ExerciseAnswer) => void;
   /** 克漏字的候選字。有提供時改成用點選的,不用打字(給國小學生)。 */
   choices?: string[];
+  /** 跟讀題可以跳過(複習時用:不一定方便出聲)。 */
+  skippable?: boolean;
 }
 
 const EMPTY: ExerciseAnswer = { attempts: [], hintUsed: false };
 
 /** 一題練習:最多作答兩次(閃卡一次),作答完畢後顯示結果與老師的講解。 */
-export function ExerciseCard({ exerciseKey, exercise, answer = EMPTY, level, onChange, choices }: Props) {
+export function ExerciseCard({ exerciseKey, exercise, answer = EMPTY, level, onChange, choices, skippable }: Props) {
   const done = isExerciseDone(exercise, answer);
   const submit = (response: string) => {
     if (done) return;
@@ -43,7 +45,17 @@ export function ExerciseCard({ exerciseKey, exercise, answer = EMPTY, level, onC
       {exercise.type === 'reorder' && <ReorderBody exercise={exercise} answer={answer} done={done} onSubmit={submit} />}
       {exercise.type === 'flashcard' && <FlashcardBody exercise={exercise} done={done} onSubmit={submit} />}
       {exercise.type === 'dictation' && <DictationBody exercise={exercise} answer={answer} done={done} level={level} onSubmit={submit} onSelfRate={selfRate} />}
-      {exercise.type === 'readAloud' && <ReadAloudBody exercise={exercise} answer={answer} done={done} level={level} onSubmit={submit} onSelfRate={selfRate} />}
+      {exercise.type === 'readAloud' && (
+        <ReadAloudBody
+          exercise={exercise}
+          answer={answer}
+          done={done}
+          level={level}
+          onSubmit={submit}
+          onSelfRate={selfRate}
+          onSkip={skippable ? () => onChange({ ...answer, skipped: true }) : undefined}
+        />
+      )}
       {exercise.type === 'rewrite' && <RewriteBody exercise={exercise} answer={answer} done={done} onSubmit={submit} />}
 
       {retrying && <p className="feedback feedback-retry">{teacherLine(level, 'retry')}</p>}
@@ -53,6 +65,13 @@ export function ExerciseCard({ exerciseKey, exercise, answer = EMPTY, level, onC
 }
 
 function Result({ exerciseKey, exercise, answer }: { exerciseKey: string; exercise: Exercise; answer: ExerciseAnswer }) {
+  if (isSkipped(exercise, answer)) {
+    return (
+      <div className="feedback feedback-skipped">
+        <strong>已跳過。</strong>這題不計分,之後會再出現。
+      </div>
+    );
+  }
   const { outcome } = gradeExercise(exercise, answer);
   if (exercise.type === 'flashcard') {
     return (
@@ -105,6 +124,8 @@ interface SpokenBodyProps {
   level: Level;
   onSubmit: (response: string) => void;
   onSelfRate: (known: boolean) => void;
+  /** 有提供時顯示「跳過這題」。 */
+  onSkip?: () => void;
 }
 
 /** 上一次作答的內容與正確率,讓學生知道差在哪裡。 */
@@ -190,7 +211,7 @@ function DictationBody({ exercise, answer, done, level, onSubmit, onSelfRate }: 
 }
 
 /** 跟讀:看著句子唸出來,由語音辨識判斷能不能被聽懂。 */
-function ReadAloudBody({ exercise, answer, done, level, onSubmit, onSelfRate }: SpokenBodyProps) {
+function ReadAloudBody({ exercise, answer, done, level, onSubmit, onSelfRate, onSkip }: SpokenBodyProps) {
   const { tts, stt, disableStt } = useSpeech();
   const [heard, setHeard] = useState('');
   const [recording, setRecording] = useState(false);
@@ -247,6 +268,14 @@ function ReadAloudBody({ exercise, answer, done, level, onSubmit, onSelfRate }: 
           {recording && <p className="muted small">停下來想一想沒關係,錄音不會自己結束。唸完再按「唸完了」。</p>}
           {error && <p className="feedback feedback-retry">{error}</p>}
         </>
+      )}
+      {!done && onSkip && !recording && (
+        <div className="exercise-actions skip-row">
+          <button type="button" className="button button-ghost" onClick={onSkip}>
+            跳過這題
+          </button>
+          <span className="muted small">現在不方便出聲的話可以跳過:不計分,之後會再出現。</span>
+        </div>
       )}
     </>
   );

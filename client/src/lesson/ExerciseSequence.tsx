@@ -23,6 +23,8 @@ interface Props {
   showKind?: boolean;
   /** 克漏字的候選字;有提供時改成點選作答。 */
   choices?: string[];
+  /** 跟讀題可以跳過。複習時才開:複習的時間地點不一定方便出聲,不讓跳過的話整份複習會卡在那一題。 */
+  skippableSpeaking?: boolean;
 }
 
 /** 這組題目是否全部作答完畢。 */
@@ -40,7 +42,7 @@ export function FlagButton({ target, flagging }: { target: string; flagging: Fla
 }
 
 /** 一題一題出:做完的題目留在上面,只多顯示下一題還沒做完的。 */
-export function ExerciseSequence({ items, answers, level, onAnswer, flagging, showContext, showKind, choices }: Props) {
+export function ExerciseSequence({ items, answers, level, onAnswer, flagging, showContext, showKind, choices, skippableSpeaking }: Props) {
   const { tts } = useSpeech();
   const firstOpen = items.findIndex((item) => !isExerciseDone(item.exercise, answers[item.key]));
   const visible = firstOpen === -1 ? items : items.slice(0, firstOpen + 1);
@@ -80,6 +82,7 @@ export function ExerciseSequence({ items, answers, level, onAnswer, flagging, sh
               level={level}
               onChange={(next) => onAnswer(item.key, next)}
               choices={item.exercise.type === 'cloze' ? choices : undefined}
+              skippable={skippableSpeaking}
             />
           </div>
         );

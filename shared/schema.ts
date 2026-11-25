@@ -256,6 +256,8 @@ export const ExerciseAnswerSchema = z.object({
   /** 依序記錄每次作答的內容,最多兩次。 */
   attempts: z.array(z.string().max(1000)).max(2),
   hintUsed: z.boolean(),
+  /** 學生按了「跳過這題」。只有複習時的跟讀題可以跳過(見 scoring.ts 的 isSkipped)。 */
+  skipped: z.boolean().optional(),
 });
 export type ExerciseAnswer = z.infer<typeof ExerciseAnswerSchema>;
 

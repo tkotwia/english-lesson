@@ -4,11 +4,11 @@ import type { Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { CalendarMonth, ProgressSummary, ReviewListItem, WordList } from '../shared/api.ts';
+import type { CalendarMonth, GrammarList, ProgressSummary, ReviewListItem, WordList } from '../shared/api.ts';
 import { addDays, localDate, monthOf, monthRange, previousMonth } from '../shared/dates.ts';
 import { FLASHCARD_FORGOT, FLASHCARD_KNOWN, lessonExercises, reviewKey, type Exercise, type ReviewItemView } from '../shared/lesson.ts';
 import { SessionStateSchema, STAGE_MINUTES, type ExerciseAnswer, type Level, type SessionResult, type SessionState, type SessionView } from '../shared/schema.ts';
-import { lessonSize } from './ai/cefr.ts';
+import { LEVEL_GUIDES, lessonSize } from './ai/cefr.ts';
 import { createMockProvider } from './ai/mock.ts';
 import { MOCK_FIXTURES, MOCK_LESSON } from './ai/mockData.ts';
 import { createApp } from './app.ts';
@@ -397,6 +397,80 @@ describe('單獨做複習練習', () => {
   });
 });
 
+// 複習不一定在方便出聲的地方做。跟讀題不能跳過的話,整份複習會卡在那一題。
+describe('複習時跳過跟讀題', () => {
+  const SKIP: ExerciseAnswer = { attempts: [], hintUsed: false, skipped: true };
+  const eventsOf = (itemId: number) => (db.prepare('SELECT COUNT(*) AS n FROM item_events WHERE item_id = ?').get(itemId) as { n: number }).n;
+  const percents = (session: SessionView) => Object.fromEntries(session.result!.sections.map((section) => [section.section, section.percent]));
+
+  /** 一位學生和他一個到期的跟讀複習項目(上一堂課跟讀沒過)。 */
+  async function dueSpeakingItem(): Promise<{ userId: number; item: ItemRow }> {
+    const userId = await newUser();
+    await takeLesson(userId, { 'speaking.r.0': WRONG_TWICE });
+    const item = items(userId).find((candidate) => candidate.kind === 'speaking')!;
+    makeDue(item.id);
+    return { userId, item };
+  }
+
+  // 跳過不是答錯:記一次錯、把間隔歸零的話,學生只是剛好不方便出聲,卻被當成不會。
+  // 到期日改成明天而不是留在原地:到期的項目是最久沒複習的排前面,一直跳過的題留在最前面會佔住暖身複習的名額。
+  it('暖身複習時跳過:不算對也不算錯,間隔與錯誤次數不變,明天再出現', async () => {
+    const { userId, item } = await dueSpeakingItem();
+    const events = eventsOf(item.id);
+    makeDue(item.id, addDays(TODAY, -5)); // 已經過期好幾天
+
+    await takeLesson(userId, { [reviewKey(item.id)]: SKIP });
+
+    expect(itemByKey(userId, item.item_key)).toMatchObject({ status: item.status, interval_days: item.interval_days, wrong_count: item.wrong_count, due_date: TOMORROW });
+    expect(eventsOf(item.id)).toBe(events);
+  });
+
+  it('跳過的題不列入這堂課的複習分數;只有它一題時,這堂課就沒有複習分數', async () => {
+    const { userId, item } = await dueSpeakingItem();
+    const onlySkipped = await takeLesson(userId, { [reviewKey(item.id)]: SKIP });
+    expect(Object.keys(percents(onlySkipped))).not.toContain('review');
+
+    makeDue(item.id);
+    makeDue(items(userId).find((candidate) => candidate.kind === 'vocab')!.id);
+    const withAnother = await takeLesson(userId, { [reviewKey(item.id)]: SKIP }); // 另一題答對
+    expect(percents(withAnother).review).toBe(100);
+  });
+
+  // 「跳過」只給不方便出聲的情況用。其他題型如果也能跳過而不計分,不會的題目都跳過就能拿高分。
+  it('其他題型不能跳過:送來「跳過」等於沒作答,照樣算不會', async () => {
+    const userId = await newUser();
+    await takeLesson(userId);
+    const vocab = items(userId).find((candidate) => candidate.kind === 'vocab')!;
+    makeDue(vocab.id);
+
+    const session = await takeLesson(userId, { [reviewKey(vocab.id)]: SKIP });
+    expect(percents(session).review).toBe(0);
+    expect(itemByKey(userId, vocab.item_key)).toMatchObject({ status: 'unknown', wrong_count: 1 });
+  });
+
+  it('新課自己的跟讀題不能用跳過躲掉:沒唸就是不會', async () => {
+    const userId = await newUser();
+    const session = await takeLesson(userId, { 'speaking.r.0': SKIP });
+    expect(session.result!.weakPoints).toContainEqual(expect.objectContaining({ key: 'speaking.r.0', outcome: 'unknown' }));
+  });
+
+  it('單獨做複習練習時跳過:回報為跳過,到期的項目排到明天,不記錯', async () => {
+    const { userId, item } = await dueSpeakingItem();
+    const res = await call('POST', '/review/results', { userId, answers: { [item.id]: SKIP } });
+    expect(res.json.results).toEqual([{ itemId: item.id, outcome: 'skipped' }]);
+    expect(itemByKey(userId, item.item_key)).toMatchObject({ wrong_count: item.wrong_count, interval_days: item.interval_days, due_date: TOMORROW });
+  });
+
+  // 回顧頁可以提前練習還沒到期的項目。這時跳過如果也改成明天,反而把它提早了。
+  it('提前練習時跳過還沒到期的題:排程不動', async () => {
+    const { userId, item } = await dueSpeakingItem();
+    const later = addDays(TODAY, 6);
+    makeDue(item.id, later);
+    await call('POST', '/review/results', { userId, answers: { [item.id]: SKIP } });
+    expect(itemByKey(userId, item.item_key)!.due_date).toBe(later);
+  });
+});
+
 describe('手動標記「我不熟」', () => {
   it('答對的題目也可以標記:進入項目庫、明天複習,但不算答錯', async () => {
     const userId = await newUser();
@@ -775,5 +849,137 @@ describe('單字表', () => {
     const userId = await newUser('小明');
     expect((await words(userId)).words).toEqual([]);
     expect((await call('GET', `/words?userId=${userId}&level=Z9`)).status).toBe(400);
+  });
+});
+
+// 文法表:和單字表一樣,讓學生回頭看這個等級教過什麼、當初哪裡錯;另外看得到這個等級還有哪些文法沒教到。
+describe('文法表', () => {
+  const grammar = async (userId: number, level?: string): Promise<GrammarList> =>
+    (await call('GET', `/grammar?userId=${userId}${level ? `&level=${level}` : ''}`)).json;
+  const A2_POINTS = LEVEL_GUIDES.A2.grammar;
+  const taught = (list: GrammarList) => list.points.filter((item) => item.lessons.length > 0);
+  const setGrammarPoint = (sessionId: number, point: string | null) => db.prepare('UPDATE sessions SET grammar_point = ? WHERE id = ?').run(point, sessionId);
+
+  it('列出這個等級課程清單上的每一個文法重點,順序和清單相同;還沒教到的也列出來', async () => {
+    const userId = await newUser();
+    const before = await grammar(userId);
+    expect(before.level).toBe('A2');
+    expect(before.points.map((item) => item.point)).toEqual(A2_POINTS);
+    expect(before.points.every((item) => item.latest === null && item.lessons.length === 0 && item.missed.length === 0)).toBe(true);
+
+    await takeLesson(userId);
+    const after = await grammar(userId);
+    expect(after.points.map((item) => item.point)).toEqual(A2_POINTS);
+    expect(taught(after).map((item) => item.point)).toEqual([A2_POINTS[0]]);
+  });
+
+  it('教過的文法附上那堂課的標題、講解、例句,以及教它的課', async () => {
+    const userId = await newUser();
+    const lesson = await takeLesson(userId);
+    const [first] = (await grammar(userId)).points;
+
+    expect(first!.latest).toEqual({ title: MOCK_LESSON.grammar.point, explanation: MOCK_LESSON.grammar.explanation, examples: MOCK_LESSON.grammar.examples });
+    expect(first!.lessons).toEqual([{ sessionId: lesson.id, date: TODAY, lessonTitle: MOCK_LESSON.title }]);
+    expect(first!.exerciseCount).toBe(3);
+    expect(first!.missed).toEqual([]);
+  });
+
+  it('標出當初答錯或不熟的練習題:題目、正確答案、當時填的內容,以及現在的複習狀態', async () => {
+    const userId = await newUser();
+    const lesson = await takeLesson(userId, { 'grammar.mcq.0': tried('0', '1'), 'grammar.cloze.0': tried('buyed', 'bought') });
+    const [first] = (await grammar(userId)).points;
+
+    expect(first!.exerciseCount).toBe(3);
+    expect(first!.missed).toEqual([
+      { sessionId: lesson.id, date: TODAY, question: 'Yesterday I ___ to school by bus.', answer: 'went', outcome: 'unknown', wrongAnswers: ['go', 'goes'], flagged: false, status: 'unknown' },
+      { sessionId: lesson.id, date: TODAY, question: 'She ___ a new bag last week. (buy)', answer: 'She bought a new bag last week. (buy)', outcome: 'unfamiliar', wrongAnswers: ['buyed'], flagged: false, status: 'unfamiliar' },
+    ]);
+  });
+
+  // 重組題畫面上給學生看的是中文意思,要排的字是打散的;文法表上要認得出是哪一題,所以題目用中文意思。
+  it('重組題的題目是它的中文意思,答案是排好的句子', async () => {
+    const userId = await newUser();
+    await takeLesson(userId, { 'grammar.reorder.0': tried('We basketball played after school yesterday.', 'Yesterday played we basketball after school.') });
+    const [first] = (await grammar(userId)).points;
+    expect(first!.missed).toHaveLength(1);
+    expect(first!.missed[0]).toMatchObject({ question: '我們昨天放學後打了籃球。', answer: 'We played basketball after school yesterday.', outcome: 'unknown' });
+  });
+
+  // 清單教完一輪會再輪一次,不同學習階段的起始課也教同一個文法。同一個文法列成好幾項的話,這張表就不是「文法表」而是上課紀錄。
+  it('同一個文法教過不只一次:合成一項,列出每一堂課(新的在前),講解用最近那一堂的,答錯的題目都算進來', async () => {
+    const userId = await newUser();
+    const older = await takeLesson(userId, { 'grammar.mcq.0': tried('0', '1') });
+    const newer = await takeLesson(userId, { 'grammar.cloze.0': tried('buyed', 'buys') });
+    setGrammarPoint(newer.id, A2_POINTS[0]!); // 第二堂教的也是清單上的第一個文法
+    const lesson = JSON.parse((db.prepare('SELECT lesson_json FROM sessions WHERE id = ?').get(newer.id) as { lesson_json: string }).lesson_json);
+    lesson.grammar.explanation = 'A newer explanation.';
+    db.prepare('UPDATE sessions SET lesson_json = ? WHERE id = ?').run(JSON.stringify(lesson), newer.id);
+
+    const list = await grammar(userId);
+    expect(taught(list)).toHaveLength(1);
+    const [first] = list.points;
+    expect(first!.lessons.map((item) => item.sessionId)).toEqual([newer.id, older.id]);
+    expect(first!.latest!.explanation).toBe('A newer explanation.');
+    expect(first!.exerciseCount).toBe(6);
+    expect(first!.missed.map((miss) => [miss.sessionId, miss.question])).toEqual([
+      [newer.id, 'She ___ a new bag last week. (buy)'],
+      [older.id, 'Yesterday I ___ to school by bus.'],
+    ]);
+  });
+
+  // 重上用的是同一份題目,第二次當然會對。那不代表當初就會,標記不能因此消失;同一堂課也不該算兩次。
+  it('重上時答對,不會把「當初答錯」的標記洗掉,也不會把那堂課算兩次', async () => {
+    const userId = await newUser();
+    const original = await takeLesson(userId, { 'grammar.mcq.0': tried('0', '1') });
+    const retake: SessionView = (await call('POST', `/sessions/${original.id}/retake`)).json;
+    const answers = Object.fromEntries(lessonExercises(retake.lesson).map(({ key, exercise }) => [key, right(exercise)]));
+    for (const item of retake.review) answers[reviewKey(item.id)] = right(item.quiz);
+    await call('POST', `/sessions/${retake.id}/complete`, { state: { ...SessionStateSchema.parse({}), answers } });
+
+    const [first] = (await grammar(userId)).points;
+    expect(first!.lessons.map((item) => item.sessionId)).toEqual([original.id]);
+    expect(first!.exerciseCount).toBe(3);
+    expect(first!.missed).toHaveLength(1);
+    expect(first!.missed[0]).toMatchObject({ outcome: 'unknown', wrongAnswers: ['go', 'goes'] });
+  });
+
+  it('答對但手動標過「我不熟」的練習題也列出來,並註明是標記的', async () => {
+    const userId = await newUser();
+    const lesson = await takeLesson(userId);
+    await call('POST', `/sessions/${lesson.id}/flags`, { target: 'grammar.cloze.0' });
+    const [first] = (await grammar(userId)).points;
+    expect(first!.missed).toEqual([expect.objectContaining({ question: 'She ___ a new bag last week. (buy)', outcome: 'correct', flagged: true, wrongAnswers: [], status: 'unfamiliar' })]);
+  });
+
+  it('只列出指定等級上過的課;沒有指定時用目前的等級;還沒上完的課不列入', async () => {
+    const userId = await newUser();
+    await takeLesson(userId);
+    expect(taught(await grammar(userId, 'B1'))).toEqual([]);
+    expect((await grammar(userId, 'B1')).points.map((item) => item.point)).toEqual(LEVEL_GUIDES.B1.grammar);
+
+    await call('PATCH', `/users/${userId}`, { level: 'B1' });
+    await call('POST', '/sessions', { userId }); // 開始了,還沒上完
+    expect(await grammar(userId)).toMatchObject({ level: 'B1' });
+    expect(taught(await grammar(userId))).toEqual([]);
+    expect(taught(await grammar(userId, 'A2'))).toHaveLength(1);
+  });
+
+  // 較早的版本沒有記下那堂課教的是清單上的哪一項。這種課不能因此從文法表上消失。
+  it('沒有記錄清單名稱的舊課:用那堂課自己寫的標題,排在清單的後面', async () => {
+    const userId = await newUser();
+    const lesson = await takeLesson(userId);
+    setGrammarPoint(lesson.id, null);
+
+    const list = await grammar(userId);
+    expect(list.points.map((item) => item.point)).toEqual([...A2_POINTS, MOCK_LESSON.grammar.point]);
+    expect(taught(list).map((item) => item.point)).toEqual([MOCK_LESSON.grammar.point]);
+  });
+
+  it('只看得到自己上過的;等級不正確會被拒絕', async () => {
+    const other = await newUser('小華');
+    await takeLesson(other);
+    const userId = await newUser('小明');
+    expect(taught(await grammar(userId))).toEqual([]);
+    expect((await call('GET', `/grammar?userId=${userId}&level=Z9`)).status).toBe(400);
   });
 });

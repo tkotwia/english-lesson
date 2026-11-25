@@ -143,9 +143,19 @@ export function gradeExercise(exercise: Exercise, answer: ExerciseAnswer | undef
   return { outcome: 'unfamiliar', credit: 0.5 };
 }
 
-/** 這一題是否已經作答完畢(答對了,或用完兩次機會)。 */
+/**
+ * 學生跳過了這一題。只有跟讀可以跳過:複習時不一定方便出聲(在圖書館、旁邊有人在睡),
+ * 不讓跳過的話,整份複習會卡在那一題。跳過的題不算對也不算錯:不計分,複習的排程往後延一天。
+ * 畫面只在複習時提供跳過;新課自己的跟讀題不能用它躲掉(見 buildSessionResult)。
+ */
+export function isSkipped(exercise: Exercise, answer: ExerciseAnswer | undefined): boolean {
+  return exercise.type === 'readAloud' && answer?.skipped === true;
+}
+
+/** 這一題是否已經作答完畢(答對了、用完兩次機會,或跳過了)。 */
 export function isExerciseDone(exercise: Exercise, answer: ExerciseAnswer | undefined): boolean {
   if (!answer) return false;
+  if (isSkipped(exercise, answer)) return true;
   return answer.attempts.length >= maxAttempts(exercise) || answer.attempts.some((attempt) => checkAnswer(exercise, attempt));
 }
 
@@ -255,6 +265,8 @@ export function buildSessionResult(lesson: Lesson, state: SessionState, grade: G
   const graded = [...reviewExercises(review), ...lessonExercises(lesson)]
     // 不能朗讀就沒有聽力題;不能語音辨識就沒有跟讀題。
     .filter((item) => (item.section === 'listening' ? tts : item.section === 'speaking' ? stt : true))
+    // 暖身複習裡跳過的跟讀題不計分。新課自己的跟讀題不適用:那裡的「跳過」照樣算沒作答。
+    .filter((item) => !(item.section === 'review' && isSkipped(item.exercise, state.answers[item.key])))
     .map((item) => ({ ...item, ...gradeExercise(item.exercise, state.answers[item.key]) }));
   const inSection = (section: Section) => graded.filter((item) => item.section === section);
 

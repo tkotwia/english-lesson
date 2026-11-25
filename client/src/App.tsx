@@ -1,6 +1,7 @@
 import { Navigate, Outlet, Route, Routes } from 'react-router';
 import { Layout } from './components/Layout.tsx';
 import { Calendar } from './pages/Calendar.tsx';
+import { Grammar } from './pages/Grammar.tsx';
 import { Home } from './pages/Home.tsx';
 import { Lesson } from './pages/Lesson.tsx';
 import { LiveTrial } from './pages/LiveTrial.tsx';
@@ -34,6 +35,7 @@ export function App() {
           <Route path="/review" element={<Review />} />
           <Route path="/review/practice" element={<ReviewPractice />} />
           <Route path="/words" element={<Words />} />
+          <Route path="/grammar" element={<Grammar />} />
           <Route path="/placement" element={<Placement />} />
           <Route path="/live" element={<LiveTrial />} />
           <Route path="/settings" element={<Settings />} />

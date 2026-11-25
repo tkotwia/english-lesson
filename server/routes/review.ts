@@ -3,7 +3,7 @@ import { ReviewResultsSchema } from '../../shared/api.ts';
 import { isValidDate, localDate } from '../../shared/dates.ts';
 import { transaction, type Db } from '../db.ts';
 import { HttpError } from '../errors.ts';
-import { dueItems, gradeReviewAnswers, missedItemsInRange, recordReviewResult } from '../items.ts';
+import { dueItems, gradeReviewAnswers, missedItemsInRange, postponeReview, recordReviewResult } from '../items.ts';
 import { getUserRow, parseId } from './users.ts';
 
 /** 單獨做複習練習時,一次最多拿幾個到期項目。 */
@@ -41,7 +41,10 @@ export function reviewRouter(db: Db): express.Router {
     const graded = gradeReviewAnswers(db, userId, answers);
     const today = localDate();
     transaction(db, () => {
-      for (const { itemId, outcome, responses } of graded) recordReviewResult(db, itemId, outcome, null, today, responses);
+      for (const { itemId, outcome, responses } of graded) {
+        if (outcome === 'skipped') postponeReview(db, itemId, today);
+        else recordReviewResult(db, itemId, outcome, null, today, responses);
+      }
     });
     res.json({ results: graded.map(({ itemId, outcome }) => ({ itemId, outcome })) });
   });

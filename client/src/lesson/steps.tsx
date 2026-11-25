@@ -66,7 +66,7 @@ export function ReviewStep({ session, state, exercises, onAnswer, onNext, nextLa
     <>
       {showIntro && <Intro session={session} />}
       <Line level={level} id="reviewIntro" />
-      <ExerciseSequence items={items} answers={state.answers} level={level} onAnswer={onAnswer} showContext showKind />
+      <ExerciseSequence items={items} answers={state.answers} level={level} onAnswer={onAnswer} showContext showKind skippableSpeaking />
       {done && (
         <>
           <Line level={level} id="reviewDone" />

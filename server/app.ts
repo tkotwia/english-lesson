@@ -9,6 +9,7 @@ import type { Db } from './db.ts';
 import { HttpError } from './errors.ts';
 import { audioRouter } from './routes/audio.ts';
 import { calendarRouter } from './routes/calendar.ts';
+import { grammarRouter } from './routes/grammar.ts';
 import { createLessonAudio, type LessonAudioOptions } from './lessonAudio.ts';
 import { createLiveSessions } from './liveSessions.ts';
 import { createNotices, withQuotaNotices } from './notices.ts';
@@ -59,6 +60,7 @@ export function createApp({ db, ai: provider, staticDir, prepareAhead = false, s
   app.use('/api/review', reviewRouter(db));
   app.use('/api/placement', placementRouter(db, ai, { prepareAhead }));
   app.use('/api/words', wordsRouter(db));
+  app.use('/api/grammar', grammarRouter(db));
   app.use('/api/live', liveRouter(db, liveSessions));
   app.use('/api/notices', noticesRouter(db, notices));
   if (audio) app.use('/api/audio', audioRouter(audio));

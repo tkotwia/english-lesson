@@ -170,6 +170,61 @@ describe('有唸好的音檔', () => {
   });
 });
 
+// 長文會切成一句一句排隊唸(一次唸太長會被瀏覽器中途切斷)。切的位置不對,語音就會唸錯:
+// 「Dr. Evans」如果在句點切開,落單的「Dr.」會被唸成 drive。
+describe('把文字切成句子來唸', () => {
+  const spoken = (text: string) => {
+    tts.speak(text);
+    return synth.texts();
+  };
+
+  it('一般的句子一句一段', () => {
+    expect(spoken('We went home. It was late! Did you eat?')).toEqual(['We went home.', 'It was late!', 'Did you eat?']);
+  });
+
+  it('稱謂的縮寫不是句子結尾:Dr. Evans 留在同一句裡', () => {
+    expect(spoken('Dr. Evans is my teacher. She is kind.')).toEqual(['Dr. Evans is my teacher.', 'She is kind.']);
+    expect(spoken('I met Mr. Lin and Mrs. Chen at St. John Road.')).toEqual(['I met Mr. Lin and Mrs. Chen at St. John Road.']);
+  });
+
+  it('句子中間的縮寫也一樣:Prof. Wang、J. K. Rowling', () => {
+    expect(spoken('Yesterday Prof. Wang read a book by J. K. Rowling.')).toEqual(['Yesterday Prof. Wang read a book by J. K. Rowling.']);
+  });
+
+  // 3.5 切成「3.」和「5」的話,會唸成 three、five,而不是 three point five。
+  it('數字裡的小數點、a.m. 這類中間有點的字不會被切開', () => {
+    expect(spoken('It costs 3.5 dollars. The shop opens at 9 a.m. on Monday.')).toEqual(['It costs 3.5 dollars.', 'The shop opens at 9 a.m. on Monday.']);
+  });
+
+  it('引號裡的句子結束後才切', () => {
+    expect(spoken('She said, "Stop!" Then she left.')).toEqual(['She said, "Stop!"', 'Then she left.']);
+  });
+
+  // 這個程式的中文台詞用半形的 ! 和 ?,後面沒有空白就接下一句。
+  it('中文的句子在句號、問號、驚嘆號後面切,後面不必有空白', () => {
+    expect(spoken('\u73FE\u5728\u56DE\u7B54\u554F\u984C\u3002\u5F88\u597D!\u6E96\u5099\u597D\u4E86\u55CE?\u958B\u59CB\u5427')).toEqual([
+      '\u73FE\u5728\u56DE\u7B54\u554F\u984C\u3002',
+      '\u5F88\u597D!',
+      '\u6E96\u5099\u597D\u4E86\u55CE?',
+      '\u958B\u59CB\u5427',
+    ]);
+  });
+
+  it('全形的問號與驚嘆號也一樣;引號裡的句子結束後才切', () => {
+    expect(spoken('\u5F88\u597D\uFF01\u6E96\u5099\u597D\u4E86\u55CE\uFF1F\u958B\u59CB')).toEqual(['\u5F88\u597D\uFF01', '\u6E96\u5099\u597D\u4E86\u55CE\uFF1F', '\u958B\u59CB']);
+    expect(spoken('\u4ED6\u8AAA\u300C\u597D\u3002\u300D\u7136\u5F8C\u8D70\u4E86\u3002')).toEqual(['\u4ED6\u8AAA\u300C\u597D\u3002\u300D', '\u7136\u5F8C\u8D70\u4E86\u3002']);
+  });
+
+  // 每一段依內容選中文或英文的語音。中文和英文黏在同一段的話,英文會被中文語音唸。
+  it('中文句子後面沒有空白就接英文:切開,讓英文用英文語音唸', () => {
+    expect(spoken('\u6E96\u5099\u597D\u4E86\u55CE?Let\u2019s go!')).toEqual(['\u6E96\u5099\u597D\u4E86\u55CE?', 'Let\u2019s go!']);
+  });
+
+  it('中英夾雜的台詞:英文句子結束後接中文,照樣切開', () => {
+    expect(spoken('Good job! \u7B54\u5C0D\u4E86\u3002Next one.')).toEqual(['Good job!', '\u7B54\u5C0D\u4E86\u3002', 'Next one.']);
+  });
+});
+
 // 按下「播放課文」的同一瞬間,畫面會出現老師的下一句話(「現在回答幾個問題」)。
 // 這句話自動朗讀時如果先停掉正在唸的內容,學生第一次按播放就聽不到課文。
 describe('學生按下播放的內容不被老師的台詞打斷', () => {

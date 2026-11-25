@@ -28,6 +28,7 @@ export function Layout() {
             <NavLink to="/calendar">日曆</NavLink>
             <NavLink to="/review">回顧</NavLink>
             <NavLink to="/words">單字表</NavLink>
+            <NavLink to="/grammar">文法表</NavLink>
             <NavLink to="/placement">分級測驗</NavLink>
             <NavLink to="/live">即時對話</NavLink>
             <NavLink to="/settings">設定</NavLink>

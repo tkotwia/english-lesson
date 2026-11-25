@@ -90,7 +90,8 @@ h3 {
 }
 
 .nav a {
-  padding: 0.35rem 0.9rem;
+  /* 選單有九個連結;左右留白小一點,視窗寬度約 1070px 以上時才不會擠到換行。 */
+  padding: 0.35rem 0.7rem;
   border-radius: 999px;
   text-decoration: none;
   color: var(--muted);
@@ -809,6 +810,17 @@ h3 {
 .feedback-unknown {
   background: var(--danger-bg);
   color: var(--danger);
+}
+
+/* 跟讀題的「跳過這題」:和上面的按鈕隔開一點,說明文字對齊按鈕中央。 */
+.skip-row {
+  margin-top: 0.6rem;
+  align-items: center;
+}
+
+.feedback-skipped {
+  background: var(--bg);
+  color: var(--muted);
 }
 
 .feedback-correct p,
@@ -1636,6 +1648,32 @@ strong.tone-low {
   gap: 0.3rem;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+/* 文法表 */
+.grammar-list .grammar-explanation {
+  margin: 0.4rem 0;
+  white-space: pre-wrap;
+}
+
+.grammar-examples {
+  margin: 0 0 0.5rem;
+  padding-left: 1.2rem;
+  color: var(--muted);
+}
+
+/* 例句是文法重點裡面的小清單,不要套用外層清單每一項的分隔線與間距。 */
+.weak-list .grammar-examples li {
+  padding: 0.1rem 0;
+  border-bottom: none;
+}
+
+.grammar-miss {
+  margin: 0.4rem 0;
+  padding: 0.5rem 0.7rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
 }
 
 /* 課後建議的影片 */

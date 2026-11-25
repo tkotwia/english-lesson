@@ -33,12 +33,40 @@ export function speechRate(level: Level): number {
   return level === 'A1' ? 0.8 : level === 'A2' ? 0.85 : level === 'B1' ? 0.92 : 1;
 }
 
-/** 把長文切成句子。有些語音一次唸太長會被瀏覽器中途切斷,逐句排隊唸比較穩定。 */
+// 句點後面不是句子結尾的常見縮寫。
+const ABBREVIATIONS = new Set(['mr', 'mrs', 'ms', 'dr', 'prof', 'sr', 'jr', 'st', 'mt', 'vs', 'no', 'etc', 'e.g', 'i.e']);
+
+/**
+ * 前一段結尾的句點其實不是句子的結束:它跟在縮寫(Dr.)或單一字母(J. K.)後面,或下一段以小寫字母開頭(9 a.m. on Monday)。
+ * 這種地方切開的話,語音會把落單的縮寫唸錯,例如「Dr. Evans」的「Dr.」單獨唸會變成 drive。
+ */
+function continuesSentence(previous: string, next: string): boolean {
+  if (!previous.endsWith('.')) return false;
+  if (/^[a-z]/.test(next)) return true;
+  const lastWord = previous.slice(0, -1).split(/\s+/).at(-1)!.replace(/^[("'“‘]+/, '').toLowerCase();
+  return ABBREVIATIONS.has(lastWord) || /^[a-z]$/.test(lastWord);
+}
+
+/**
+ * 把長文切成句子。有些語音一次唸太長會被瀏覽器中途切斷,逐句排隊唸比較穩定。
+ * 拿不準的地方寧可不切:兩句連著唸沒有壞處,切錯了會唸錯。句子在這三種地方結束:
+ * 1. 句號、問號、驚嘆號(後面可以跟著引號或括號)之後有空白。英文一定要有空白才算,所以 3.5、a.m. 中間的點不算。
+ * 2. 問號或驚嘆號後面直接接中文字,或中文字後面的問號、驚嘆號直接接英文。這個程式的中文台詞用的是半形的 ! 和 ?,
+ *    而且後面沒有空白(「很好!接下來…」「準備好了嗎?Let’s go!」)。中英文要分開,才能各自用對的語音唸。
+ * 3. 中文的句號,或全形的問號、驚嘆號,後面直接接下一句。
+ */
 function sentences(text: string): string[] {
-  return text
-    .split(/(?<=[.!?。!?])\s*/u)
+  const pieces = text
+    .split(/(?<=[.!?\u3002\uFF01\uFF1F]["'\u201D\u2019)\]\u300D\u300F]*)\s+|(?<=[!?]["'\u201D\u2019)\]\u300D\u300F]*)(?=[\u3400-\u9FFF])|(?<=[\u3400-\u9FFF][!?])(?=[A-Za-z])|(?<=[\u3002\uFF01\uFF1F][\u201D\u2019)\u300D\u300F]*)(?=[^\s\u201D\u2019)\u300D\u300F])/u)
     .map((part) => part.trim())
     .filter(Boolean);
+  const joined: string[] = [];
+  for (const piece of pieces) {
+    const previous = joined.at(-1);
+    if (previous !== undefined && continuesSentence(previous, piece)) joined[joined.length - 1] = `${previous} ${piece}`;
+    else joined.push(piece);
+  }
+  return joined;
 }
 
 export interface SpeakOptions {
