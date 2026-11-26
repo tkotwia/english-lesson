@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { correctAnswerText, FLASHCARD_FORGOT, type Exercise } from './lesson.ts';
-import { checkAnswer, combineScore, gradeExercise, isExerciseDone, isSkipped, markSolution, normalizeAnswer, wordAccuracy, wrongResponses } from './scoring.ts';
+import { checkAnswer, closerTranscript, combineScore, gradeExercise, isExerciseDone, isSkipped, markSolution, normalizeAnswer, wordAccuracy, wrongResponses } from './scoring.ts';
 
 const mcq: Exercise = { type: 'mcq', prompt: 'Pick B', options: ['A', 'B', 'C'], answerIndex: 1, explanation: 'because' };
 const cloze: Exercise = { type: 'cloze', sentence: 'I ___ happy.', answers: ['am', "'m"], hint: 'be 動詞', explanation: 'because' };
@@ -62,6 +62,35 @@ describe('單題判定:分數要能區分「會」「不熟」「不會」', () 
     expect(isExerciseDone(mcq, { attempts: ['0'], hintUsed: false })).toBe(false);
     expect(isExerciseDone(mcq, { attempts: ['1'], hintUsed: false })).toBe(true);
     expect(isExerciseDone(mcq, { attempts: ['0', '2'], hintUsed: false })).toBe(true);
+  });
+});
+
+// 瀏覽器的語音辨識邊聽邊猜,最後會把整句重新判斷一次,有時把唸對的字換成別的字。
+// 學生在畫面上看到自己唸對了,送出後卻被算錯;所以畫面上出現過的文字都算數,取最接近原句的那一段。
+describe('跟讀:用哪一段辨識結果計分', () => {
+  const sentence = 'Kevin played a ring toss game.';
+
+  it('畫面上出現過的文字比最後的結果更接近原句時,用畫面上的那一段', () => {
+    expect(closerTranscript(sentence, 'Kevin paid a ring toss game', 'Kevin played a ring toss game')).toBe('Kevin played a ring toss game');
+  });
+
+  it('最後的結果比較接近原句時,用最後的結果', () => {
+    expect(closerTranscript(sentence, 'Kevin played a ring toss game', 'Kevin played a ring')).toBe('Kevin played a ring toss game');
+  });
+
+  // 兩段一樣接近時沒有理由換:最後的結果是瀏覽器聽完整句之後的判斷。
+  it('一樣接近時維持最後的結果', () => {
+    expect(closerTranscript(sentence, 'Kevin played a ring toss game', 'kevin played a ring toss game.')).toBe('Kevin played a ring toss game');
+    expect(closerTranscript(sentence, 'Kevin paid a ring toss game', 'Kevin played a rain toss game')).toBe('Kevin paid a ring toss game');
+  });
+
+  it('唸到一半的文字不會贏過唸完的:少的字一樣拉低正確率', () => {
+    expect(closerTranscript(sentence, 'Kevin played a ring toss gain', 'Kevin played a ring')).toBe('Kevin played a ring toss gain');
+  });
+
+  it('最後什麼都沒有、但畫面上出現過內容時,用畫面上的;兩邊都沒有內容就是空的', () => {
+    expect(closerTranscript(sentence, '', 'Kevin played a ring toss game')).toBe('Kevin played a ring toss game');
+    expect(closerTranscript(sentence, '', '')).toBe('');
   });
 });
 

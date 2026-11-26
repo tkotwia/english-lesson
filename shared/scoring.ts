@@ -76,6 +76,16 @@ export function wordAccuracy(expected: string, actual: string): number {
 }
 
 /**
+ * 跟讀時要用哪一段辨識結果計分。
+ * 瀏覽器的語音辨識邊聽邊猜,等學生停頓或按下「唸完了」時會把整句重新判斷一次,有時把唸對的字換成別的字:
+ * 學生在畫面上看到自己唸對了,送出後卻被算錯。所以錄音過程中畫面上出現過的文字都算數,取最接近原句的那一段。
+ * other 比 preferred 更接近原句時才用 other;一樣接近時維持 preferred。
+ */
+export function closerTranscript(sentence: string, preferred: string, other: string): string {
+  return wordAccuracy(sentence, other) > wordAccuracy(sentence, preferred) ? other : preferred;
+}
+
+/**
  * 訂正題:學生是不是真的把錯的地方改對了。
  * 長句子只改一個字時,照抄原本錯的句子也有九成以上的字是對的;只看正確率的話,沒訂正也會過關。
  * 所以另外要求:正確說法裡「原句沒有的字」都要出現,而且不能和原句一模一樣。

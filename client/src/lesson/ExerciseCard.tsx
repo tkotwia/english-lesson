@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { FLASHCARD_FORGOT, FLASHCARD_KNOWN, isSentenceExercise, reorderWords, type Exercise, type SentenceExercise } from '../../../shared/lesson.ts';
 import { BLANK, type ExerciseAnswer, type Level } from '../../../shared/schema.ts';
-import { ACCURACY_CORRECT, checkAnswer, gradeExercise, isExerciseDone, isSkipped, wordAccuracy } from '../../../shared/scoring.ts';
+import { ACCURACY_CORRECT, checkAnswer, closerTranscript, gradeExercise, isExerciseDone, isSkipped, wordAccuracy } from '../../../shared/scoring.ts';
 import { useSpeech } from '../speech/SpeechContext.tsx';
 import { isMicUnavailable, listen, sttErrorMessage, type Listening } from '../speech/stt.ts';
 import { speak, speechRate } from '../speech/tts.ts';
@@ -217,6 +217,8 @@ function ReadAloudBody({ exercise, answer, done, level, onSubmit, onSelfRate, on
   const [recording, setRecording] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const listening = useRef<Listening | null>(null);
+  // 這次錄音過程中,畫面上出現過、最接近原句的那一段文字。
+  const closest = useRef('');
 
   useEffect(() => () => listening.current?.stop(), []);
 
@@ -224,13 +226,19 @@ function ReadAloudBody({ exercise, answer, done, level, onSubmit, onSelfRate, on
     setError(null);
     setHeard('');
     setRecording(true);
+    closest.current = '';
     listening.current = listen({
-      onText: setHeard,
+      onText: (text) => {
+        setHeard(text);
+        closest.current = closerTranscript(exercise.sentence, text, closest.current);
+      },
       onEnd: (finalText) => {
         setRecording(false);
+        // 瀏覽器最後會把整句重新判斷一次,有時把唸對的字改掉;畫面上出現過更接近原句的文字時,用那一段計分。
+        const text = closerTranscript(exercise.sentence, finalText, closest.current);
         // 沒收到聲音不算一次作答,讓學生再試。
-        if (!finalText) setError('沒有聽到聲音,請再試一次。');
-        else onSubmit(finalText);
+        if (!text) setError('沒有聽到聲音,請再試一次。');
+        else onSubmit(text);
       },
       onError: (code) => {
         setRecording(false);
