@@ -121,6 +121,8 @@ export function createGeminiProvider(options: GeminiOptions): AiProvider {
   const timeoutMs = { ...DEFAULT_TIMEOUT_MS, ...options.timeoutMs };
   // 以「key + 模型」為單位:額度是跟著 key 所屬的專案走的,一位使用者用完不代表另一位也用完。
   const cooldowns = new Map<string, Cooldown>();
+  // 每個模型最近一次成功回應的時間(同樣以「key + 模型」為單位)。
+  const lastSuccess = new Map<string, number>();
 
   const isCooling = (apiKey: string, model: string): boolean => {
     const entry = cooldowns.get(`${apiKey}|${model}`);
@@ -143,11 +145,16 @@ export function createGeminiProvider(options: GeminiOptions): AiProvider {
   /**
    * 這次要依序嘗試的模型:跳過剛失敗過的。
    * 沒有這一步的話,每次呼叫都會先在同一個失敗的模型上白等一次,才換到備援。
-   * 全部都在冷卻中時仍然照原順序全部試一次,不會因此連試都不試。
+   * 全部都在冷卻中時仍然全部試一次,不會因此連試都不試。這時從最近一次成功過的模型開始:
+   * 剛失敗的模型很可能還是不行,而且不一定馬上失敗。2026-11-26 實際發生過:三個模型都剛失敗,
+   * 學生再按一次批改,排第二的模型卡了 180 秒才逾時,排第三的(幾分鐘前才成功過)2 秒就回應。
    */
   const candidates = (apiKey: string, tier: AiTier): string[] => {
     const ready = models[tier].filter((model) => !isCooling(apiKey, model));
-    return ready.length > 0 ? ready : models[tier];
+    if (ready.length > 0) return ready;
+    const succeededAt = (model: string) => lastSuccess.get(`${apiKey}|${model}`) ?? 0;
+    // 排序是穩定的:沒有成功過的模型之間維持設定的順序。
+    return [...models[tier]].sort((a, b) => succeededAt(b) - succeededAt(a));
   };
 
   const seconds = (startedAt: number) => Math.round((now() - startedAt) / 100) / 10;
@@ -180,7 +187,7 @@ export function createGeminiProvider(options: GeminiOptions): AiProvider {
                 store: false,
               },
               // 逾時由我們設定;失敗時不讓 SDK 自己重試,直接交給下面的備援順序處理,才不會白等。
-              { timeout_ms: timeoutMs[request.tier], retries: { strategy: 'none' } },
+              { timeout_ms: request.timeoutMs ?? timeoutMs[request.tier], retries: { strategy: 'none' } },
             );
           } catch (err) {
             const mapped = mapGeminiError(err);
@@ -196,6 +203,7 @@ export function createGeminiProvider(options: GeminiOptions): AiProvider {
             break;
           }
 
+          lastSuccess.set(`${request.apiKey}|${model}`, now());
           const usage = interaction.usage ?? {};
           const durationMs = now() - startedAt;
           request.onUsage?.({ model, inputTokens: usage.total_input_tokens ?? 0, outputTokens: usage.total_output_tokens ?? 0, durationMs });

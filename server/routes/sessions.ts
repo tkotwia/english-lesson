@@ -76,6 +76,13 @@ interface SessionRow {
  */
 const REVIEW_LIMIT: Record<Minutes, number> = { 20: 20, 25: 24, 30: 24, 40: 32 };
 
+/**
+ * 批改時每個模型最多等多久。批改是學生在畫面前等的,不能用品質類預設的 180 秒:
+ * 模型卡住時(不是馬上回報忙線,而是一直沒有回應),學生要乾等 3 分鐘才換到下一個模型。
+ * 批改的輸出很短,正常幾秒到幾十秒就回來,60 秒還沒回應就當它卡住了。
+ */
+const GRADE_TIMEOUT_MS = 60_000;
+
 /** 原本那堂課的編號:重上的課回傳它重上的對象,否則是自己。 */
 const rootId = (row: SessionRow): number => row.retake_of ?? row.id;
 
@@ -519,6 +526,7 @@ export function sessionsRouter(db: Db, ai: AiProvider, options: SessionsOptions)
           apiKey: user.api_key,
           ...gradePrompt({ level: row.level, stage: row.stage, lesson, writing, chat: talked ? state.chat : [], objectiveSections }),
           schema: GradeSchema,
+          timeoutMs: GRADE_TIMEOUT_MS,
           onUsage: usageRecorder(db, row.user_id),
         });
         recordTaskTiming(db, 'grade', Date.now() - gradingStartedAt);

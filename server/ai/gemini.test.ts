@@ -116,6 +116,14 @@ describe('Gemini:縮短等待時間', () => {
     expect(t.calls[0]!.options.timeout_ms).toBe(45_000);
   });
 
+  // 批改是學生在畫面前等的。品質類預設等 180 秒才放棄一個模型,模型卡住時學生要乾等 3 分鐘才換下一個。
+  it('個別的呼叫可以指定比較短的逾時;沒指定的照類別的設定', async () => {
+    const t = setup({ strong: [ok('a'), ok('b')] });
+    await t.provider.generateJson({ tier: 'quality', task: 'grade', apiKey: 'user-key', system: 'sys', input: 'in', schema: Schema, timeoutMs: 60_000 });
+    await t.generate();
+    expect(t.calls.map((call) => call.options.timeout_ms)).toEqual([60_000, 180_000]);
+  });
+
   it('逾時視為暫時無法使用,改用下一個模型', async () => {
     const timeout = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
     const t = setup({ strong: [timeout], medium: [ok('from medium')] });
@@ -197,6 +205,32 @@ describe('Gemini:記住剛失敗的模型', () => {
     });
     await expect(t.generate()).rejects.toMatchObject({ code: 'unavailable' });
     await expect(t.generate()).resolves.toEqual({ answer: 'recovered' });
+  });
+
+  // 2026-11-26 實際發生:三個模型都剛回報忙線,學生再按一次批改。照原順序試的話,排第二的模型卡了 180 秒才逾時,
+  // 而排第三的模型幾分鐘前才成功過,2 秒就回應。剛失敗的模型不一定馬上失敗,所以從最近成功過的開始試。
+  it('所有模型都在冷卻中時,從最近一次成功過的模型開始試', async () => {
+    const t = setup({
+      strong: [httpError(503, 'x')],
+      medium: [httpError(503, 'x')],
+      lite: [ok('lesson by lite'), httpError(503, 'x'), ok('graded by lite')],
+    });
+    await expect(t.generate()).resolves.toEqual({ answer: 'lesson by lite' }); // 前兩個忙線,第三個成功
+    await expect(t.generate()).rejects.toMatchObject({ code: 'unavailable' }); // 只剩第三個可以試,這次它也忙線
+    await expect(t.generate()).resolves.toEqual({ answer: 'graded by lite' }); // 三個都在冷卻中
+    expect(t.modelsCalled()).toEqual(['strong', 'medium', 'lite', 'lite', 'lite']);
+  });
+
+  it('最近成功過的模型也失敗時,其餘的照設定的順序試', async () => {
+    const t = setup({
+      strong: [httpError(503, 'x'), ok('strong recovered')],
+      medium: [httpError(503, 'x')],
+      lite: [ok('first'), httpError(503, 'x'), httpError(503, 'x')],
+    });
+    await t.generate();
+    await t.generate().catch(() => undefined);
+    await expect(t.generate()).resolves.toEqual({ answer: 'strong recovered' });
+    expect(t.modelsCalled().slice(4)).toEqual(['lite', 'strong']);
   });
 
   // 額度跟著 key 所屬的專案走:一位使用者用完,不代表另一位也用完。

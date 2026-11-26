@@ -45,6 +45,8 @@ function quizOf(row: ItemRow, content: ItemContent): Exercise {
   if ((row.kind === 'writing' || row.kind === 'speaking') && quiz.type === 'flashcard') {
     return { type: 'rewrite', original: quiz.front, sentence: quiz.back, explanation: quiz.explanation };
   }
+  // 單字題看提示不扣分(複習時也一樣)。這條規則加入之前存下來的題目沒有這個標記,在這裡補上。
+  if (row.kind === 'vocab' && quiz.type === 'cloze') return { ...quiz, hintFree: true };
   return quiz;
 }
 

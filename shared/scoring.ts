@@ -149,7 +149,10 @@ export function gradeExercise(exercise: Exercise, answer: ExerciseAnswer | undef
     }
     return { outcome: 'unknown', credit: 0 };
   }
-  if (correctAt === 0 && !answer?.hintUsed) return { outcome: 'correct', credit: 1 };
+  // 看了提示才答對只有半分。單字題例外:練習時單字表是收起來的,一句話的空格常常不只一個字填得進去,
+  // 提示(中文意思與第一個字母)是在告訴學生「要填的是哪一個字」,看它不算偷看答案。
+  const hintCounts = answer?.hintUsed === true && !(exercise.type === 'cloze' && exercise.hintFree === true);
+  if (correctAt === 0 && !hintCounts) return { outcome: 'correct', credit: 1 };
   return { outcome: 'unfamiliar', credit: 0.5 };
 }
 

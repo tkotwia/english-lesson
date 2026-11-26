@@ -43,6 +43,19 @@ describe('單題判定:分數要能區分「會」「不熟」「不會」', () 
     expect(gradeExercise(cloze, { attempts: ['am'], hintUsed: true })).toEqual({ outcome: 'unfamiliar', credit: 0.5 });
   });
 
+  // 單字練習時單字表是收起來的,一句話的空格常常不只一個字填得進去。
+  // 提示(中文意思與第一個字母)是在告訴學生要填哪一個字,看它不算偷看答案,所以不扣分。
+  it('單字題看了提示、第一次就答對:滿分,不列入弱點', () => {
+    const vocab: Exercise = { ...cloze, hintFree: true };
+    expect(gradeExercise(vocab, { attempts: ['am'], hintUsed: true })).toEqual({ outcome: 'correct', credit: 1 });
+  });
+
+  it('單字題看了提示還是答錯:第二次才對照樣半分,兩次都錯照樣零分', () => {
+    const vocab: Exercise = { ...cloze, hintFree: true };
+    expect(gradeExercise(vocab, { attempts: ['is', 'am'], hintUsed: true })).toEqual({ outcome: 'unfamiliar', credit: 0.5 });
+    expect(gradeExercise(vocab, { attempts: ['is', 'are'], hintUsed: true })).toEqual({ outcome: 'unknown', credit: 0 });
+  });
+
   it('兩次都錯:零分,記為不會', () => {
     expect(gradeExercise(mcq, { attempts: ['0', '2'], hintUsed: false })).toEqual({ outcome: 'unknown', credit: 0 });
   });

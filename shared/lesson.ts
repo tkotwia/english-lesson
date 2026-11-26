@@ -28,7 +28,8 @@ export interface Rewrite {
 
 export type Exercise =
   | ({ type: 'mcq' } & Mcq)
-  | ({ type: 'cloze' } & Cloze)
+  // hintFree:看提示不扣分。單字題才有(見 scoring.ts 的 gradeExercise)。
+  | ({ type: 'cloze'; hintFree?: boolean } & Cloze)
   | ({ type: 'reorder' } & Reorder)
   | ({ type: 'flashcard' } & Flashcard)
   | ({ type: 'dictation' } & SpokenSentence)
@@ -101,7 +102,7 @@ export function lessonExercises(lesson: Lesson): LessonExercise[] {
     }),
   );
   lesson.vocab.forEach((v, i) =>
-    list.push({ key: `vocab.${i}`, section: 'language', kind: 'vocab', label: v.word, exercise: { type: 'cloze', ...v.cloze } }),
+    list.push({ key: `vocab.${i}`, section: 'language', kind: 'vocab', label: v.word, exercise: { type: 'cloze', ...v.cloze, hintFree: true } }),
   );
   const point = lesson.grammar.point;
   lesson.grammar.mcq.forEach((q, i) =>

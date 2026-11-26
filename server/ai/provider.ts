@@ -45,6 +45,8 @@ export interface AiJsonRequest<T> {
   onUsage?: UsageRecorder;
   /** 有模型因為超過額度上限(429)而被拒絕時回報;即使之後改用別的模型成功了也會回報。 */
   onQuota?: QuotaRecorder;
+  /** 這次呼叫在每個模型上最多等多久(毫秒);沒指定就用這個類別的設定。學生在畫面前等著的呼叫(批改)要用比較短的。 */
+  timeoutMs?: number;
 }
 
 export interface AiProvider {

@@ -397,6 +397,78 @@ describe('單獨做複習練習', () => {
   });
 });
 
+// 單字練習時單字表是收起來的,一句話的空格常常不只一個字填得進去;提示(中文意思與第一個字母)是告訴學生要填哪一個字。
+// 所以單字題看提示不扣分。文法題的提示是在教怎麼變化,看了才答對仍然只有半分。
+describe('單字題看提示不扣分', () => {
+  const percents = (session: SessionView) => Object.fromEntries(session.result!.sections.map((section) => [section.section, section.percent]));
+  const hinted = (exercise: Exercise): ExerciseAnswer => ({ ...right(exercise), hintUsed: true });
+  const vocabQuiz = { type: 'cloze', ...MOCK_LESSON.vocab[0]!.cloze } as const;
+
+  it('上課時單字題看了提示才答對:這一題滿分,單字記為新學的,不算不熟', async () => {
+    const userId = await newUser();
+    const session = await takeLesson(userId, { 'vocab.0': hinted(vocabQuiz) });
+
+    expect(percents(session).language).toBe(100);
+    expect(session.result!.weakPoints).toEqual([]);
+    expect(itemByKey(userId, 'vocab:crowded')).toMatchObject({ status: 'learning', wrong_count: 0 });
+    const list: WordList = (await call('GET', `/words?userId=${userId}`)).json;
+    expect(list.words.find((word) => word.word === 'crowded')).toMatchObject({ outcome: 'correct' });
+  });
+
+  it('文法題的提示照舊:看了提示才答對只有半分,記為不熟', async () => {
+    const userId = await newUser();
+    const session = await takeLesson(userId, { 'grammar.cloze.0': { attempts: ['bought'], hintUsed: true } });
+
+    expect(percents(session).language).toBeLessThan(100);
+    expect(session.result!.weakPoints).toEqual([expect.objectContaining({ key: 'grammar.cloze.0', outcome: 'unfamiliar' })]);
+  });
+
+  // 複習時如果看提示就算不熟,間隔會歸零:學生明明拼得出這個字,卻要從頭每天複習。
+  it('複習時也一樣:單字題看了提示答對,照答對處理,間隔拉長', async () => {
+    const userId = await newUser();
+    await takeLesson(userId);
+    const item = itemByKey(userId, 'vocab:crowded')!;
+    expect(item).toMatchObject({ status: 'learning', interval_days: 1 });
+    makeDue(item.id);
+
+    const session = await takeLesson(userId, { [reviewKey(item.id)]: hinted(vocabQuiz) });
+    expect(percents(session).review).toBe(100);
+    expect(itemByKey(userId, 'vocab:crowded')).toMatchObject({ status: 'learning', interval_days: 4, wrong_count: 0 });
+  });
+
+  // 這條規則加入之前就存進項目庫的單字題沒有「看提示不扣分」的標記。舊單字不能因此還照舊規則扣分。
+  it('規則加入之前存下來的單字題,複習時同樣不扣分', async () => {
+    const userId = await newUser();
+    await takeLesson(userId);
+    const item = itemByKey(userId, 'vocab:crowded')!;
+    db.prepare(`UPDATE items SET content_json = json_remove(content_json, '$.quiz.hintFree') WHERE id = ?`).run(item.id);
+    makeDue(item.id);
+
+    await takeLesson(userId, { [reviewKey(item.id)]: hinted(vocabQuiz) });
+    expect(itemByKey(userId, 'vocab:crowded')).toMatchObject({ status: 'learning', interval_days: 4, wrong_count: 0 });
+  });
+
+  it('單獨做複習練習時也一樣', async () => {
+    const userId = await newUser();
+    await takeLesson(userId);
+    const item = itemByKey(userId, 'vocab:crowded')!;
+    makeDue(item.id);
+    const res = await call('POST', '/review/results', { userId, answers: { [item.id]: hinted(vocabQuiz) } });
+    expect(res.json.results).toEqual([{ itemId: item.id, outcome: 'correct' }]);
+  });
+
+  it('複習時的文法題看了提示才答對:仍然算不熟,間隔歸零', async () => {
+    const userId = await newUser();
+    await takeLesson(userId, { 'grammar.cloze.0': tried('buyed', 'bought') });
+    const item = items(userId).find((candidate) => candidate.kind === 'grammar')!;
+    makeDue(item.id);
+    db.prepare('UPDATE items SET interval_days = 8 WHERE id = ?').run(item.id);
+
+    await takeLesson(userId, { [reviewKey(item.id)]: { attempts: ['bought'], hintUsed: true } });
+    expect(items(userId).find((candidate) => candidate.id === item.id)).toMatchObject({ status: 'unfamiliar', interval_days: 1 });
+  });
+});
+
 // 複習不一定在方便出聲的地方做。跟讀題不能跳過的話,整份複習會卡在那一題。
 describe('複習時跳過跟讀題', () => {
   const SKIP: ExerciseAnswer = { attempts: [], hintUsed: false, skipped: true };

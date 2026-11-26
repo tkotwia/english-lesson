@@ -13,7 +13,7 @@ let db: Db;
 let server: Server;
 let base: string;
 /** 每一次送給 AI 的請求,用來檢查用了哪一類模型、送出了什麼內容。 */
-let requests: { tier: string; task: string; text: string }[];
+let requests: { tier: string; task: string; text: string; timeoutMs: number | undefined }[];
 
 /** 包住假資料供應商,把每次請求記下來。 */
 function spyProvider(): AiProvider {
@@ -21,7 +21,7 @@ function spyProvider(): AiProvider {
   return {
     ...inner,
     generateJson<T>(request: AiJsonRequest<T>): Promise<T> {
-      requests.push({ tier: request.tier, task: request.task, text: `${request.system}\n${request.input}` });
+      requests.push({ tier: request.tier, task: request.task, text: `${request.system}\n${request.input}`, timeoutMs: request.timeoutMs });
       return inner.generateJson(request);
     },
   };
@@ -195,6 +195,15 @@ describe('免費額度的用量', () => {
 
     expect(requests.filter((r) => r.tier === 'quality')).toHaveLength(2);
     expect(requests.filter((r) => r.tier === 'chat')).toHaveLength(11);
+  });
+
+  // 批改是學生在畫面前等的。模型卡住時,預設要等 180 秒才換下一個模型;備課在背景做,等久一點沒關係。
+  it('批改時每個模型最多等 60 秒;備課沿用品質類的設定', async () => {
+    const session = await startLesson();
+    await talk(session, 1);
+    await complete(session);
+    const timeoutOf = Object.fromEntries(requests.map((r) => [r.task, r.timeoutMs]));
+    expect(timeoutOf).toMatchObject({ grade: 60_000, lesson: undefined });
   });
 
   it('寫作與對話合併成一次批改', async () => {

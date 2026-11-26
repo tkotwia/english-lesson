@@ -287,15 +287,20 @@ export function SpeakingStep({ session, state, exercises, onAnswer, onNext, next
 export interface WritingStepProps {
   session: SessionView;
   writing: string;
+  /** 這堂課有沒有做情境對話。沒寫作時,老師要批改的只剩它。 */
+  talked: boolean;
   submitting: boolean;
   onWriting: (text: string) => void;
   onSubmit: () => void;
 }
 
-export function WritingStep({ session, writing, submitting, onWriting, onSubmit }: WritingStepProps) {
+export function WritingStep({ session, writing, talked, submitting, onWriting, onSubmit }: WritingStepProps) {
   const { lesson, level } = session;
   const words = countWords(writing);
   const enough = words >= lesson.writing.minWords;
+  // 沒寫任何內容:寫作不批改,直接 0 分。這時要等的只有對話的批改;連對話也沒有的話,不必請老師批改,馬上結束。
+  const blank = words === 0;
+  const grading = !blank || talked;
   // 批改預估要等幾秒(由過去實際花費的時間推估),用來顯示進度條。查不到就不顯示進度條。
   const [gradeSeconds, setGradeSeconds] = useState<number | null>(null);
 
@@ -315,7 +320,7 @@ export function WritingStep({ session, writing, submitting, onWriting, onSubmit 
   }, []);
 
   function submit() {
-    if (words === 0 && !window.confirm('你還沒有寫任何內容。沒有交寫作的話,寫作這一項會是 0 分。確定要直接結束嗎?')) return;
+    if (blank && !window.confirm(`你還沒有寫任何內容。不交寫作的話,寫作這一項不會批改,直接 0 分${talked ? ';老師只批改剛才的對話' : ''}。確定要直接結束嗎?`)) return;
     if (words > 0 && !enough && !window.confirm(`目前 ${words} 個字,還不到建議的 ${lesson.writing.minWords} 個字,分數可能會比較低。確定要交了嗎?`)) return;
     onSubmit();
   }
@@ -355,10 +360,11 @@ export function WritingStep({ session, writing, submitting, onWriting, onSubmit 
 
       <div className="step-next">
         <button type="button" className="button button-primary button-large" onClick={submit} disabled={submitting}>
-          {submitting ? 'Emma 老師正在批改…' : '交給老師批改'}
+          {submitting ? (!grading ? '正在結束…' : blank ? 'Emma 老師正在批改對話…' : 'Emma 老師正在批改…') : blank ? '不交寫作,直接結束' : '交給老師批改'}
         </button>
       </div>
-      {submitting && gradeSeconds !== null && gradeSeconds > 0 && <WaitProgress expectedSeconds={gradeSeconds} />}
+      {blank && !submitting && <p className="muted small center">沒有寫作的話,寫作這一項不批改,直接 0 分。</p>}
+      {submitting && grading && gradeSeconds !== null && gradeSeconds > 0 && <WaitProgress expectedSeconds={gradeSeconds} />}
     </>
   );
 }

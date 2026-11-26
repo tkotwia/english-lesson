@@ -290,6 +290,7 @@ export function LessonPlayer({ session, onAbandoned }: Props) {
             <WritingStep
               session={session}
               writing={state.writing}
+              talked={state.chat.some((turn) => turn.role === 'student')}
               submitting={submitting}
               onWriting={(text) => update({ writing: text }, 'debounced')}
               onSubmit={complete}

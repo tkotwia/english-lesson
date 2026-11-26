@@ -439,7 +439,7 @@ function ClozeBody({
           )}
           {!answer.hintUsed && (
             <button type="button" className="button button-ghost" onClick={onHint}>
-              看提示(只能拿半分)
+              {exercise.hintFree ? '看提示' : '看提示(只能拿半分)'}
             </button>
           )}
         </div>
